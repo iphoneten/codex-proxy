@@ -29,6 +29,28 @@ function extractModelId(model: string): string {
   return colon > 0 ? model.slice(colon + 1) : model;
 }
 
+function buildUsageDetails(opts: {
+  cachedTokens?: number;
+  reasoningTokens?: number;
+}): {
+  input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
+} {
+  const input_tokens_details =
+    opts.cachedTokens != null
+      ? { cached_tokens: opts.cachedTokens }
+      : undefined;
+  const output_tokens_details =
+    opts.reasoningTokens != null
+      ? { reasoning_tokens: opts.reasoningTokens }
+      : undefined;
+
+  return {
+    ...(input_tokens_details ? { input_tokens_details } : {}),
+    ...(output_tokens_details ? { output_tokens_details } : {}),
+  };
+}
+
 export class GeminiUpstream implements UpstreamAdapter {
   readonly tag = "gemini" as const;
   private apiKey: string;
@@ -165,8 +187,7 @@ export class GeminiUpstream implements UpstreamAdapter {
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
-            input_tokens_details: cachedTokens > 0 ? { cached_tokens: cachedTokens } : {},
-            output_tokens_details: {},
+            ...buildUsageDetails({ cachedTokens: cachedTokens > 0 ? cachedTokens : undefined }),
           },
         },
       },

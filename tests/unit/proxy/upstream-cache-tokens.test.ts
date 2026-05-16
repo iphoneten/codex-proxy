@@ -76,7 +76,7 @@ describe("OpenAIUpstream — cache_tokens extraction", () => {
     expect((usage?.input_tokens_details as Record<string, unknown>).cached_tokens).toBe(1200);
   });
 
-  it("emits empty input_tokens_details when upstream omits the cache field", async () => {
+  it("omits input_tokens_details when upstream omits the cache field", async () => {
     const sse = [
       "data: " + JSON.stringify({
         id: "chatcmpl-2",
@@ -91,7 +91,29 @@ describe("OpenAIUpstream — cache_tokens extraction", () => {
     const upstream = new OpenAIUpstream("openai", "fake-key");
     const events = await collect(upstream.parseStream(makeResponse(sse)));
     const usage = findCompleted(events);
-    expect(usage?.input_tokens_details).toEqual({});
+    expect(usage?.input_tokens_details).toBeUndefined();
+    expect(usage?.output_tokens_details).toBeUndefined();
+  });
+
+  it("includes reasoning_tokens only when explicitly present", async () => {
+    const upstream = new OpenAIUpstream("openai", "fake-key");
+    const events = await collect(
+      upstream.parseStream(makeResponse([
+        "data: " + JSON.stringify({
+          id: "chatcmpl-3",
+          choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+          usage: {
+            prompt_tokens: 9,
+            completion_tokens: 4,
+          },
+        }),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"))),
+    );
+    const usage = findCompleted(events);
+    expect(usage?.output_tokens_details).toBeUndefined();
   });
 });
 
@@ -186,7 +208,7 @@ describe("AnthropicUpstream — cache_tokens extraction", () => {
     expect((usage?.input_tokens_details as Record<string, unknown>).cached_tokens).toBe(480);
   });
 
-  it("emits empty input_tokens_details when no cache field is present", async () => {
+  it("omits input_tokens_details when no cache field is present", async () => {
     const sse = [
       "event: message_start",
       "data: " + JSON.stringify({
@@ -205,7 +227,8 @@ describe("AnthropicUpstream — cache_tokens extraction", () => {
     const upstream = new AnthropicUpstream("fake-key");
     const events = await collect(upstream.parseStream(makeResponse(sse)));
     const usage = findCompleted(events);
-    expect(usage?.input_tokens_details).toEqual({});
+    expect(usage?.input_tokens_details).toBeUndefined();
+    expect(usage?.output_tokens_details).toBeUndefined();
   });
 });
 
@@ -234,7 +257,7 @@ describe("GeminiUpstream — cache_tokens extraction", () => {
     expect((usage?.input_tokens_details as Record<string, unknown>).cached_tokens).toBe(750);
   });
 
-  it("emits empty input_tokens_details when upstream omits cachedContentTokenCount", async () => {
+  it("omits input_tokens_details when upstream omits cachedContentTokenCount", async () => {
     const sse = [
       "data: " + JSON.stringify({
         candidates: [{ content: { parts: [{ text: "x" }] } }],
@@ -248,6 +271,7 @@ describe("GeminiUpstream — cache_tokens extraction", () => {
     const upstream = new GeminiUpstream("fake-key");
     const events = await collect(upstream.parseStream(makeResponse(sse)));
     const usage = findCompleted(events);
-    expect(usage?.input_tokens_details).toEqual({});
+    expect(usage?.input_tokens_details).toBeUndefined();
+    expect(usage?.output_tokens_details).toBeUndefined();
   });
 });

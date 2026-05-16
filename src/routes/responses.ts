@@ -97,6 +97,28 @@ function syncOutputTextFromOutput(response: Record<string, unknown>): void {
   if (outputText) response.output_text = outputText;
 }
 
+function buildUsageDetails(opts: {
+  cachedTokens?: number;
+  reasoningTokens?: number;
+}): {
+  input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
+} {
+  const input_tokens_details =
+    opts.cachedTokens != null
+      ? { cached_tokens: opts.cachedTokens }
+      : undefined;
+  const output_tokens_details =
+    opts.reasoningTokens != null
+      ? { reasoning_tokens: opts.reasoningTokens }
+      : undefined;
+
+  return {
+    ...(input_tokens_details ? { input_tokens_details } : {}),
+    ...(output_tokens_details ? { output_tokens_details } : {}),
+  };
+}
+
 // ── Passthrough stream translator ──────────────────────────────────
 
 const STREAM_DISCONNECTED_CODE = "stream_disconnected";
@@ -284,8 +306,7 @@ function normalizePassthroughEventData(
     response.usage = {
       input_tokens: 0,
       output_tokens: 0,
-      input_tokens_details: {},
-      output_tokens_details: {},
+      ...buildUsageDetails({}),
     };
   }
 

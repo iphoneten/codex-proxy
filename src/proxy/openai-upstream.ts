@@ -24,6 +24,28 @@ function extractModelId(model: string): string {
   return colon > 0 ? model.slice(colon + 1) : model;
 }
 
+function buildUsageDetails(opts: {
+  cachedTokens?: number;
+  reasoningTokens?: number;
+}): {
+  input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
+} {
+  const input_tokens_details =
+    opts.cachedTokens != null
+      ? { cached_tokens: opts.cachedTokens }
+      : undefined;
+  const output_tokens_details =
+    opts.reasoningTokens != null
+      ? { reasoning_tokens: opts.reasoningTokens }
+      : undefined;
+
+  return {
+    ...(input_tokens_details ? { input_tokens_details } : {}),
+    ...(output_tokens_details ? { output_tokens_details } : {}),
+  };
+}
+
 export class OpenAIUpstream implements UpstreamAdapter {
   readonly tag: string;
   private apiKey: string;
@@ -177,8 +199,7 @@ export class OpenAIUpstream implements UpstreamAdapter {
           usage: {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
-            input_tokens_details: usage.cached_tokens > 0 ? { cached_tokens: usage.cached_tokens } : {},
-            output_tokens_details: {},
+            ...buildUsageDetails({ cachedTokens: usage.cached_tokens > 0 ? usage.cached_tokens : undefined }),
           },
         },
       },
