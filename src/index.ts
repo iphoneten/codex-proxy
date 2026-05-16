@@ -10,7 +10,6 @@ import { RefreshScheduler } from "./auth/refresh-scheduler.js";
 import { requestId } from "./middleware/request-id.js";
 import { logger } from "./middleware/logger.js";
 import { errorHandler } from "./middleware/error-handler.js";
-import { dashboardAuth } from "./middleware/dashboard-auth.js";
 import { logCapture } from "./middleware/log-capture.js";
 import { cors } from "./middleware/cors.js";
 
@@ -36,8 +35,6 @@ import { loadStaticModels } from "./models/model-store.js";
 import { startModelRefresh, stopModelRefresh } from "./models/model-fetcher.js";
 import { startQuotaRefresh, stopQuotaRefresh } from "./auth/usage-refresher.js";
 import { UsageStatsStore } from "./auth/usage-stats.js";
-import { startSessionCleanup, stopSessionCleanup } from "./auth/dashboard-session.js";
-import { createDashboardAuthRoutes } from "./routes/dashboard-login.js";
 import { UpstreamRouter } from "./proxy/upstream-router.js";
 import { OpenAIUpstream } from "./proxy/openai-upstream.js";
 import { AnthropicUpstream } from "./proxy/anthropic-upstream.js";
@@ -118,7 +115,6 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.use("*", requestId);
   app.use("*", logger);
   app.use("*", errorHandler);
-  app.use("*", dashboardAuth);
   app.use("*", logCapture);
 
   // Build upstream router from config
@@ -160,8 +156,10 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // Initialize API key pool for runtime-managed third-party keys
   const apiKeyPool = new ApiKeyPool();
   const hasApiKeys = apiKeyPool.getAll().length > 0;
+  const hasLocalAccounts = accountPool.isAuthenticated();
+  const hasDirectUpstreams = adapters.size > 0 || hasApiKeys;
 
-  const upstreamRouter = (adapters.size > 0 || hasApiKeys)
+  const upstreamRouter = hasDirectUpstreams
     ? new UpstreamRouter(adapters, cfg.model_routing, "codex")
     : undefined;
 
@@ -184,7 +182,6 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   usageStats.recoverBaseline(accountPool);
   const webRoutes = createWebRoutes(accountPool, usageStats);
 
-  app.route("/", createDashboardAuthRoutes());
   app.route("/", authRoutes);
   app.route("/", accountRoutes);
   app.route("/", apiKeyRoutes);
@@ -211,25 +208,26 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 ╔══════════════════════════════════════════╗
 ║           Codex Proxy Server             ║
 ╠══════════════════════════════════════════╣
-║  Status: ${accountPool.isAuthenticated() ? "Authenticated ✓" : "Not logged in  "}             ║
+║  Status: ${hasLocalAccounts ? "Authenticated ✓" : hasDirectUpstreams ? "Upstream only  " : "Not logged in  "}             ║
 ║  Listen: http://${displayHost}:${port}              ║
 ║  API:    http://${displayHost}:${port}/v1            ║
 ╚══════════════════════════════════════════╝
 `);
 
-  if (accountPool.isAuthenticated()) {
+  if (hasLocalAccounts) {
     const user = accountPool.getUserInfo();
     console.log(`  User: ${user?.email ?? "unknown"}`);
     console.log(`  Plan: ${user?.planType ?? "unknown"}`);
     console.log(`  Key:  ${config.server.proxy_api_key ?? accountPool.getProxyApiKey()}`);
     console.log(`  Pool: ${poolSummary.active} active / ${poolSummary.total} total accounts`);
+  } else if (hasDirectUpstreams) {
+    console.log(`  Mode: Direct upstream routing`);
+    console.log(`  Upstreams: ${apiKeyPool.getAll().length} runtime relay record(s), ${adapters.size} static provider(s)`);
+    console.log(`  Key:  ${config.server.proxy_api_key ?? "disabled"}`);
   } else {
     console.log(`  Open http://${displayHost}:${port} to login`);
   }
   console.log();
-
-  // Start dashboard session cleanup
-  startSessionCleanup();
 
   // Start background update checkers
   // (Electron has its own native auto-updater — skip proxy update checker)
@@ -239,7 +237,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   }
 
   // Start background model refresh (requires auth to be ready)
-  startModelRefresh(accountPool, cookieJar, proxyPool);
+  startModelRefresh(accountPool, cookieJar, proxyPool, !hasApiKeys);
 
   // Start usage stats snapshot timer (no upstream requests — quota is collected passively)
   startQuotaRefresh(accountPool, usageStats);
@@ -274,7 +272,6 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
         stopProxyUpdateChecker();
         stopModelRefresh();
         stopQuotaRefresh();
-        stopSessionCleanup();
         refreshScheduler.destroy();
         proxyPool.destroy();
         cookieJar.destroy();

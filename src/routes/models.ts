@@ -38,10 +38,24 @@ function toRuntimeOpenAIModel(id: string): OpenAIModel {
   };
 }
 
+function buildApiRootResponse() {
+  return {
+    object: "service",
+    service: "codex-proxy",
+    basePath: "/v1",
+    endpoints: [
+      "/v1/models",
+      "/v1/chat/completions",
+      "/v1/messages",
+      "/v1/responses",
+    ],
+  };
+}
+
 export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
   const app = new Hono();
 
-  app.get("/v1/models", (c) => {
+  function buildModelListResponse(): OpenAIModelList {
     const catalog = getModelCatalog();
     const aliases = getModelAliases();
     const modelsById = new Map<string, OpenAIModel>();
@@ -56,8 +70,25 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
       modelsById.set(modelId, toRuntimeOpenAIModel(modelId));
     }
 
-    const response: OpenAIModelList = { object: "list", data: [...modelsById.values()] };
-    return c.json(response);
+    return { object: "list", data: [...modelsById.values()] };
+  }
+
+  app.get("/v1/models", (c) => {
+    return c.json(buildModelListResponse());
+  });
+
+  // Compatibility response for clients that probe the API base path directly.
+  app.get("/v1", (c) => {
+    return c.json(buildApiRootResponse());
+  });
+
+  app.get("/v1/", (c) => {
+    return c.json(buildApiRootResponse());
+  });
+
+  // Compatibility alias for clients that incorrectly call the singular path.
+  app.get("/v1/model", (c) => {
+    return c.json(buildModelListResponse());
   });
 
   // Full catalog with reasoning efforts (for dashboard UI)

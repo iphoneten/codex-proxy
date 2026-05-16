@@ -18,6 +18,8 @@ const ApiKeyBindingSchema = z.object({
   apiKey: z.string().min(1),
   baseUrl: z.string().url().optional(),
   label: z.string().max(64).nullable().optional(),
+  priority: z.number().int().optional(),
+  maxRetries: z.number().int().min(0).max(10).optional(),
 }).refine(
   (d) => d.provider !== "custom" || Boolean(d.baseUrl),
   { message: "baseUrl is required for custom providers" },
@@ -70,34 +72,46 @@ function addEntries(pool: ApiKeyPool, items: ApiKeyBindingInput[]): {
   const errors: string[] = [];
 
   for (const item of items) {
-    for (const model of item.models) {
-      try {
-        keys.push(pool.add({
-          provider: item.provider,
-          model,
-          apiKey: item.apiKey,
-          baseUrl: item.baseUrl,
-          label: item.label,
-        }));
-      } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err));
-      }
+    try {
+      keys.push(pool.add({
+        provider: item.provider,
+        models: item.models,
+        apiKey: item.apiKey,
+        baseUrl: item.baseUrl,
+        label: item.label,
+        priority: item.priority,
+        maxRetries: item.maxRetries,
+      }));
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
     }
   }
 
   return { added: keys.length, failed: errors.length, errors, keys };
 }
 
-function toImportableEntries<T extends { model?: string }>(items: T[]): Array<Omit<T, "model"> & { models: string[] }> {
-  return items.map(({ model, ...rest }) => ({
+function toListEntry(entry: ApiKeyEntry) {
+  return {
+    ...entry,
+    apiKey: "",
+    apiKeyMasked: maskKey(entry.apiKey),
+  };
+}
+
+function toImportableEntries<T extends { models?: string[]; model?: string }>(items: T[]): Array<Omit<T, "model" | "models"> & { models: string[] }> {
+  return items.map(({ model, models, ...rest }) => ({
     ...rest,
-    models: model ? [model] : [],
+    models: Array.isArray(models) && models.length > 0 ? models : (model ? [model] : []),
   }));
 }
 
 const LabelSchema = z.object({ label: z.string().max(64).nullable() });
+const BaseUrlSchema = z.object({ baseUrl: z.string().trim().min(1) });
+const ApiKeySchema = z.object({ apiKey: z.string().trim().min(1) });
 const StatusSchema = z.object({ status: z.enum(["active", "disabled"]) });
 const BatchDeleteSchema = z.object({ ids: z.array(z.string()).min(1) });
+const AddModelsSchema = z.object({ models: ModelsSchema });
+const RemoveModelsSchema = z.object({ models: ModelsSchema });
 
 async function parseJsonRequest<T>(c: Context, schema: z.ZodSchema<T>): Promise<
   { ok: true; data: T } | { ok: false; response: Response }
@@ -131,7 +145,9 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
   // ── List ──────────────────────────────────────────────────────
 
   app.get("/auth/api-keys", (c) => {
-    return c.json({ keys: pool.exportAll(false) });
+    return c.json({
+      keys: pool.getAll().map(toListEntry),
+    });
   });
 
   // ── Fetch custom provider models ───────────────────────────────
@@ -198,7 +214,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
       success: true,
       added: result.added,
       failed: result.failed,
-      keys: result.keys.map((entry) => ({ ...entry, apiKey: maskKey(entry.apiKey) })),
+      keys: result.keys.map(toListEntry),
     });
   });
 
@@ -228,10 +244,119 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     return c.json({ success: true });
   });
 
+  app.patch("/auth/api-keys/:id/base-url", async (c) => {
+    const parsed = await parseJsonRequest(c, BaseUrlSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.setBaseUrl(c.req.param("id"), parsed.data.baseUrl)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.patch("/auth/api-keys/:id/api-key", async (c) => {
+    const parsed = await parseJsonRequest(c, ApiKeySchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.setApiKey(c.req.param("id"), parsed.data.apiKey)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.get("/auth/api-keys/:id/api-key", (c) => {
+    const entry = pool.getEntry(c.req.param("id"));
+    if (!entry) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ apiKey: entry.apiKey });
+  });
+
+  app.get("/auth/api-keys/:id/models", (c) => {
+    const entry = pool.getEntry(c.req.param("id"));
+    if (!entry) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ models: entry.models });
+  });
+
+  app.post("/auth/api-keys/:id/models", async (c) => {
+    const parsed = await parseJsonRequest(c, AddModelsSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.addModels(c.req.param("id"), parsed.data.models)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.delete("/auth/api-keys/:id/models", async (c) => {
+    const parsed = await parseJsonRequest(c, RemoveModelsSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.removeModels(c.req.param("id"), parsed.data.models)) {
+      c.status(404);
+      return c.json({ error: "API key not found or no models left" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.post("/auth/api-keys/:id/models/load", async (c) => {
+    const entry = pool.getEntry(c.req.param("id"));
+    if (!entry) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+
+    try {
+      const upstream = await fetch(`${normalizeBaseUrl(entry.baseUrl)}/models`, {
+        headers: {
+          "Authorization": `Bearer ${entry.apiKey}`,
+          "Accept": "application/json",
+        },
+      });
+
+      if (!upstream.ok) {
+        c.status(upstream.status === 401 || upstream.status === 403 ? upstream.status : 502);
+        return c.json({
+          error: upstream.status === 401 || upstream.status === 403
+            ? "Failed to fetch models: unauthorized"
+            : "Failed to fetch models from provider",
+        });
+      }
+
+      const payload = await upstream.json().catch(() => null);
+      const models = normalizeFetchedModels(payload).map((model) => model.id);
+      if (models.length === 0) {
+        c.status(502);
+        return c.json({ error: "Provider returned no models" });
+      }
+
+      return c.json({ success: true, models });
+    } catch {
+      c.status(502);
+      return c.json({ error: "Failed to reach provider" });
+    }
+  });
+
   app.patch("/auth/api-keys/:id/status", async (c) => {
     const parsed = await parseJsonRequest(c, StatusSchema);
     if (!parsed.ok) return parsed.response;
     if (!pool.setStatus(c.req.param("id"), parsed.data.status)) { c.status(404); return c.json({ error: "API key not found" }); }
+    return c.json({ success: true });
+  });
+
+  app.patch("/auth/api-keys/:id/routing", async (c) => {
+    const parsed = await parseJsonRequest(c, z.object({
+      priority: z.number().int().optional(),
+      maxRetries: z.number().int().min(0).max(10).optional(),
+    }));
+    if (!parsed.ok) return parsed.response;
+    if (!pool.setRouting(c.req.param("id"), parsed.data)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
     return c.json({ success: true });
   });
 

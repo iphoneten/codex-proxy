@@ -34,6 +34,20 @@ const summary: UsageSummary = {
   total_request_count: 222_000,
   total_accounts: 5,
   active_accounts: 2,
+  upstream_breakdown: [
+    {
+      key: "api-key:1",
+      provider: "custom",
+      label: "codex1",
+      input_tokens: 1200,
+      output_tokens: 340,
+      cached_tokens: 200,
+      image_input_tokens: 0,
+      image_output_tokens: 0,
+      request_count: 5,
+      updated_at: "2026-05-16T12:00:00.000Z",
+    },
+  ],
 };
 
 const windowPoints: UsageDataPoint[] = [
@@ -116,5 +130,8 @@ describe("UsageStats", () => {
     expect(screen.queryByText("999.0K")).toBeNull();
     expect(screen.queryByText("888.0K")).toBeNull();
     expect(screen.queryByText("222.0K")).toBeNull();
+    expect(screen.queryByText("Upstream Breakdown")).toBeNull();
+    expect(screen.queryByText("codex1")).toBeNull();
+    expect(screen.queryByText("custom")).toBeNull();
   });
 });

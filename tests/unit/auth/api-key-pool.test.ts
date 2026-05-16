@@ -185,10 +185,40 @@ describe("ApiKeyPool", () => {
     expect(exported).toHaveLength(1);
     expect(exported[0]).toEqual({
       provider: "anthropic",
-      model: "claude-opus-4-6",
+      models: ["claude-opus-4-6"],
       apiKey: "k1",
       baseUrl: "https://api.anthropic.com/v1",
       label: "Prod",
+      priority: 0,
+      maxRetries: 2,
+    });
+  });
+
+  it("removeModels removes only the selected models and keeps the first remaining model as primary", () => {
+    const entry = pool.add({
+      provider: "openai",
+      models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+      apiKey: "k1",
+    });
+
+    expect(pool.removeModels(entry.id, ["gpt-5.4-mini"])).toBe(true);
+    expect(pool.getEntry(entry.id)).toMatchObject({
+      model: "gpt-5.4",
+      models: ["gpt-5.4", "gpt-5.3-codex"],
+    });
+  });
+
+  it("removeModels rejects deleting the last remaining model", () => {
+    const entry = pool.add({
+      provider: "openai",
+      model: "gpt-5.4",
+      apiKey: "k1",
+    });
+
+    expect(pool.removeModels(entry.id, ["gpt-5.4"])).toBe(false);
+    expect(pool.getEntry(entry.id)).toMatchObject({
+      model: "gpt-5.4",
+      models: ["gpt-5.4"],
     });
   });
 

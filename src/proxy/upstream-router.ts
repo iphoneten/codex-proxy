@@ -14,16 +14,24 @@
 
 import type { UpstreamAdapter } from "./upstream-adapter.js";
 import type { ApiKeyPool, ApiKeyEntry } from "../auth/api-key-pool.js";
+import type { ApiKeyProvider } from "../auth/api-key-catalog.js";
 import { getModelAliases, getModelInfo, stripKnownModelSuffixes } from "../models/model-store.js";
 
 /** Factory that creates an UpstreamAdapter for a given ApiKeyEntry. */
 export type AdapterFactory = (entry: ApiKeyEntry) => UpstreamAdapter;
 
 export type UpstreamRouteMatch =
-  | { kind: "api-key"; adapter: UpstreamAdapter; entry: ApiKeyEntry; resolvedModel?: string }
+  | { kind: "api-key"; adapter: UpstreamAdapter; entry: ApiKeyEntry; entries?: ApiKeyEntry[]; resolvedModel?: string }
   | { kind: "adapter"; adapter: UpstreamAdapter; resolvedModel?: string }
   | { kind: "codex"; adapter?: UpstreamAdapter; resolvedModel?: string }
   | { kind: "not-found" };
+
+export interface DirectUpstreamCandidate {
+  adapter: UpstreamAdapter;
+  entry?: ApiKeyEntry;
+  matchedModel?: string;
+  resolvedModel?: string;
+}
 
 export class UpstreamRouter {
   private apiKeyPool: ApiKeyPool | null = null;
@@ -42,6 +50,69 @@ export class UpstreamRouter {
   private resolvePoolModelCandidates(model: string): string[] {
     const explicitProvider = this.splitExplicitProvider(model);
     return explicitProvider ? [model, explicitProvider.bareModel] : [model];
+  }
+
+  private getEntryResolvedModel(entry: ApiKeyEntry): string {
+    return entry.model?.trim() || entry.models[0]?.trim() || "";
+  }
+
+  private sortEntries(entries: ApiKeyEntry[]): ApiKeyEntry[] {
+    return [...entries].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      const aLast = a.lastUsedAt ?? "";
+      const bLast = b.lastUsedAt ?? "";
+      if (aLast !== bLast) return aLast.localeCompare(bLast);
+      return a.addedAt.localeCompare(b.addedAt);
+    });
+  }
+
+  private getFallbackProviders(model: string): ApiKeyProvider[] {
+    const explicitProvider = this.splitExplicitProvider(model);
+    if (explicitProvider?.tag === "openai") return ["openai", "openrouter", "custom"];
+    if (explicitProvider?.tag === "anthropic") return ["anthropic"];
+    if (explicitProvider?.tag === "gemini") return ["gemini"];
+    if (/^claude/i.test(model)) return ["anthropic"];
+    if (/^gemini/i.test(model)) return ["gemini"];
+    if (this.isKnownCodexModel(model)) return ["openai", "openrouter", "custom"];
+    return [];
+  }
+
+  private resolveExactApiKeyCandidates(model: string): DirectUpstreamCandidate[] {
+    if (!this.apiKeyPool || !this.adapterFactory) return [];
+
+    for (const candidateModel of this.resolvePoolModelCandidates(model)) {
+      const entries = this.apiKeyPool.getByModel(candidateModel);
+      if (entries.length > 0) {
+        return entries.map((entry) => ({
+          entry,
+          adapter: this.getOrCreateDynamicAdapter(entry),
+          matchedModel: model,
+          resolvedModel: candidateModel,
+        }));
+      }
+    }
+    return [];
+  }
+
+  private resolveFallbackApiKeyCandidates(model: string): DirectUpstreamCandidate[] {
+    if (!this.apiKeyPool || !this.adapterFactory) return [];
+    const fallbackProviders = new Set(this.getFallbackProviders(model));
+    if (fallbackProviders.size === 0) return [];
+
+    const fallbackEntries = this.sortEntries(
+      this.apiKeyPool.getAll().filter((entry) =>
+        entry.status === "active" &&
+        fallbackProviders.has(entry.provider) &&
+        this.getEntryResolvedModel(entry).length > 0,
+      ),
+    );
+
+    return fallbackEntries.map((entry) => ({
+      entry,
+      adapter: this.getOrCreateDynamicAdapter(entry),
+      matchedModel: model,
+      resolvedModel: this.getEntryResolvedModel(entry),
+    }));
   }
 
   constructor(
@@ -63,15 +134,18 @@ export class UpstreamRouter {
   private resolveMatchInternal(model: string, seenAliases: Set<string>): UpstreamRouteMatch {
     const explicitProvider = this.splitExplicitProvider(model);
 
-    if (this.apiKeyPool && this.adapterFactory) {
-      for (const candidate of this.resolvePoolModelCandidates(model)) {
-        const entries = this.apiKeyPool.getByModel(candidate);
-        if (entries.length > 0) {
-          const entry = pickLeastRecentlyUsed(entries);
-          this.apiKeyPool.markUsed(entry.id);
-          return { kind: "api-key", adapter: this.getOrCreateDynamicAdapter(entry), entry };
-        }
-      }
+    const apiKeyCandidates = this.resolveExactApiKeyCandidates(model);
+    if (apiKeyCandidates.length > 0) {
+      const [firstCandidate, ...restCandidates] = apiKeyCandidates;
+      const entry = firstCandidate.entry!;
+      this.apiKeyPool?.markUsed(entry.id);
+      return {
+        kind: "api-key",
+        adapter: firstCandidate.adapter,
+        entry,
+        entries: [entry, ...restCandidates.map((candidate) => candidate.entry!).filter(Boolean)],
+        resolvedModel: firstCandidate.resolvedModel,
+      };
     }
 
     if (explicitProvider) {
@@ -139,6 +213,20 @@ export class UpstreamRouter {
     return this.resolveMatch(model).kind === "api-key";
   }
 
+  resolveDirectCandidates(model: string): DirectUpstreamCandidate[] {
+    const apiKeyCandidates = this.resolveExactApiKeyCandidates(model);
+    if (apiKeyCandidates.length > 0) return apiKeyCandidates;
+
+    const fallbackCandidates = this.resolveFallbackApiKeyCandidates(model);
+    if (fallbackCandidates.length > 0) return fallbackCandidates;
+
+    const match = this.resolveMatch(model);
+    if (match.kind === "adapter") {
+      return [{ adapter: match.adapter, resolvedModel: match.resolvedModel ?? model }];
+    }
+    return [];
+  }
+
   private isKnownCodexModel(model: string): boolean {
     const aliases = getModelAliases();
     const trimmed = model.trim();
@@ -166,17 +254,6 @@ export class UpstreamRouter {
     return adapter;
   }
 }
-
-function pickLeastRecentlyUsed(entries: ApiKeyEntry[]): ApiKeyEntry {
-  let best = entries[0];
-  for (let i = 1; i < entries.length; i++) {
-    const e = entries[i];
-    if (!e.lastUsedAt) return e; // never used → pick immediately
-    if (!best.lastUsedAt || e.lastUsedAt < best.lastUsedAt) best = e;
-  }
-  return best;
-}
-
 function withResolvedModel(match: UpstreamRouteMatch, resolvedModel: string): UpstreamRouteMatch {
   if (match.kind === "not-found") return match;
   if (match.resolvedModel) return match;

@@ -5,6 +5,7 @@ import type { CodexResponsesRequest } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
+import type { ApiKeyEntry } from "../../auth/api-key-pool.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import type { StreamCloseContextBase } from "../../logs/stream-close-event.js";
 
@@ -97,4 +98,6 @@ export interface HandleDirectRequestOptions {
   upstream: UpstreamAdapter;
   req: ProxyRequest;
   fmt: FormatAdapter;
+  upstreamCandidates?: Array<{ adapter: UpstreamAdapter; entry?: ApiKeyEntry; resolvedModel?: string }>;
+  upstreamEntry?: ApiKeyEntry;
 }

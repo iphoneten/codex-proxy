@@ -157,6 +157,7 @@ function UsageContent({ t, summary, summaryLoading, granularity, setGranularity,
           <UsageChart data={dataPoints} />
         )}
       </div>
+
     </>
   );
 }

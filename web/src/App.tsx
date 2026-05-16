@@ -1,6 +1,4 @@
-import { useState, useEffect, useRef, useContext } from "preact/hooks";
-import { createContext } from "preact";
-import type { ComponentChildren } from "preact";
+import { useState, useEffect, useRef } from "preact/hooks";
 import { I18nProvider } from "../../shared/i18n/context";
 import { ThemeProvider } from "../../shared/theme/context";
 import { Header } from "./components/Header";
@@ -22,14 +20,10 @@ import { useProxies } from "../../shared/hooks/use-proxies";
 import { useStatus } from "../../shared/hooks/use-status";
 import { useUpdateStatus } from "../../shared/hooks/use-update-status";
 import { useI18n, useT } from "../../shared/i18n/context";
-import { useDashboardAuth } from "../../shared/hooks/use-dashboard-auth";
 import type { TranslationKey } from "../../shared/i18n/translations";
 import { getShowUpdateDialogPreference, shouldAutoOpenUpdateModal } from "./update-modal-policy";
 
 export { shouldAutoOpenUpdateModal };
-
-const DashboardAuthCtx = createContext<{ onLogout?: () => void }>({});
-function useDashboardAuthCtx() { return useContext(DashboardAuthCtx); }
 
 function useUpdateMessage() {
   const { t } = useI18n();
@@ -102,7 +96,6 @@ function Dashboard() {
   const proxies = useProxies();
   const status = useStatus(accounts.list.length);
   const update = useUpdateMessage();
-  const { onLogout } = useDashboardAuthCtx();
   const [showModal, setShowModal] = useState(false);
   const prevUpdateAvailable = useRef(false);
   const hash = useHash();
@@ -143,7 +136,6 @@ function Dashboard() {
         version={update.status?.proxy.version ?? null}
         commit={update.status?.proxy.commit ?? null}
         hasUpdate={update.hasUpdate}
-        onLogout={onLogout}
         unreadErrors={errorCount.unread}
       />
 
@@ -256,65 +248,11 @@ function useHash(): string {
   return hash;
 }
 
-function LoginGate({ children }: { children: ComponentChildren }) {
-  const { t } = useI18n();
-  const auth = useDashboardAuth();
-  const [password, setPassword] = useState("");
-
-  if (auth.status === "loading") {
-    return (
-      <div class="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-bg-dark">
-        <div class="animate-pulse text-slate-400 dark:text-text-dim text-sm">Loading...</div>
-      </div>
-    );
-  }
-
-  if (auth.status === "login") {
-    const handleSubmit = (e: Event) => { e.preventDefault(); if (password.trim()) auth.login(password.trim()); };
-    return (
-      <div class="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-bg-dark px-4">
-        <div class="w-full max-w-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-2xl shadow-lg p-8">
-          <div class="flex flex-col items-center gap-2 mb-6">
-            <div class="flex items-center justify-center size-12 rounded-full bg-primary-container text-primary border border-primary/20">
-              <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-              </svg>
-            </div>
-            <h1 class="text-lg font-bold text-slate-800 dark:text-text-main">{t("dashboardLogin")}</h1>
-            <p class="text-xs text-slate-500 dark:text-text-dim text-center">{t("dashboardLoginRequired")}</p>
-          </div>
-          <form onSubmit={handleSubmit} class="flex flex-col gap-4">
-            <div>
-              <label class="block text-xs font-medium text-slate-600 dark:text-text-dim mb-1.5">{t("dashboardPassword")}</label>
-              <input type="password" value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
-                class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-sm text-slate-800 dark:text-text-main focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-colors"
-                placeholder="proxy_api_key" autofocus />
-            </div>
-            {auth.error && (
-              <p class="text-xs text-red-500 font-medium">
-                {auth.error.includes("Too many") ? t("dashboardTooManyAttempts") : t("dashboardLoginError")}
-              </p>
-            )}
-            <button type="submit" class="w-full py-2.5 bg-primary-action hover:bg-primary-action-hover text-white text-sm font-semibold rounded-lg transition-colors shadow-sm active:scale-[0.98]">
-              {t("dashboardLoginBtn")}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  const ctxValue = auth.isRemoteSession ? { onLogout: auth.logout } : {};
-  return <DashboardAuthCtx.Provider value={ctxValue}>{children}</DashboardAuthCtx.Provider>;
-}
-
 export function App() {
   return (
     <I18nProvider>
       <ThemeProvider>
-        <LoginGate>
-          <Dashboard />
-        </LoginGate>
+        <Dashboard />
       </ThemeProvider>
     </I18nProvider>
   );

@@ -87,7 +87,24 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     if (match.kind === "api-key") {
       expect(match.entry.model).toBe("gpt-5.4");
       expect(match.adapter.tag).toBe("dynamic-openai-gpt-5.4");
+      expect(match.entries).toHaveLength(1);
     }
+  });
+
+  it("orders api-key candidates by priority descending", () => {
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1", priority: 1 });
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2", priority: 20 });
+
+    const adapters = new Map<string, UpstreamAdapter>();
+    adapters.set("codex", mockAdapter("codex"));
+
+    const router = new UpstreamRouter(adapters, {}, "codex");
+    router.setApiKeyPool(pool, mockFactory);
+
+    const candidates = router.resolveDirectCandidates("gpt-5.4");
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0].entry?.apiKey).toBe("k2");
+    expect(candidates[1].entry?.apiKey).toBe("k1");
   });
 
   it("classifies known codex models explicitly", () => {

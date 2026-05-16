@@ -15,7 +15,12 @@ import type {
   GeminiUsageMetadata,
   GeminiPart,
 } from "../types/gemini.js";
-import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import {
+  iterateCodexEvents,
+  EmptyResponseError,
+  UpstreamPrematureCloseError,
+  type UsageInfo,
+} from "./codex-event-extractor.js";
 import { reconvertTupleValues } from "./tuple-schema.js";
 import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
 
@@ -37,14 +42,21 @@ export async function* streamCodexToGemini(
   let cachedTokens: number | undefined;
   let hasContent = false;
   let tupleTextBuffer = tupleSchema ? "" : null;
+  let sawTerminalEvent = false;
+  let responseId: string | null = null;
+  let eventCount = 0;
+  let hadReasoning = false;
 
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    eventCount++;
     if (evt.responseId) onResponseId?.(evt.responseId);
+    if (evt.responseId) responseId = evt.responseId;
 
     // Handle upstream error events
     if (evt.error) {
       throw codexApiErrorFromEvent(evt.error);
     }
+    if (evt.reasoningDelta) hadReasoning = true;
 
     // Function call done → emit as a candidate with functionCall part
     if (evt.functionCallDone) {
@@ -100,6 +112,7 @@ export async function* streamCodexToGemini(
       }
 
       case "response.completed": {
+        sawTerminalEvent = true;
         // Flush buffered tuple text as reconverted JSON
         if (tupleTextBuffer !== null && tupleSchema && tupleTextBuffer) {
           let text = tupleTextBuffer;
@@ -171,6 +184,10 @@ export async function* streamCodexToGemini(
       }
     }
   }
+
+  if (!sawTerminalEvent) {
+    throw new UpstreamPrematureCloseError(responseId, hadReasoning, eventCount);
+  }
 }
 
 /**
@@ -193,17 +210,25 @@ export async function collectCodexToGeminiResponse(
   let cachedTokens: number | undefined;
   let responseId: string | null = null;
   const functionCallParts: GeminiPart[] = [];
+  let sawTerminalEvent = false;
+  let eventCount = 0;
+  let hadReasoning = false;
 
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    eventCount++;
     if (evt.responseId) responseId = evt.responseId;
     if (evt.error) {
       throw codexApiErrorFromEvent(evt.error);
     }
     if (evt.textDelta) fullText += evt.textDelta;
+    if (evt.reasoningDelta) hadReasoning = true;
     if (evt.usage) {
       inputTokens = evt.usage.input_tokens;
       outputTokens = evt.usage.output_tokens;
       cachedTokens = evt.usage.cached_tokens;
+    }
+    if (evt.typed.type === "response.completed" || evt.typed.type === "response.failed") {
+      sawTerminalEvent = true;
     }
     if (evt.functionCallDone) {
       let args: Record<string, unknown> = {};
@@ -231,6 +256,9 @@ export async function collectCodexToGeminiResponse(
 
   // Detect empty response (HTTP 200 but no content)
   if (!fullText && functionCallParts.length === 0 && outputTokens === 0) {
+    if (!sawTerminalEvent) {
+      throw new UpstreamPrematureCloseError(responseId, hadReasoning, eventCount);
+    }
     throw new EmptyResponseError(responseId, { input_tokens: inputTokens, output_tokens: outputTokens });
   }
 

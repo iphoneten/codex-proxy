@@ -80,6 +80,15 @@ function extractOutputTextFromItem(item: unknown): string {
   return chunks.join("");
 }
 
+function resolveDirectCandidatesSafe(upstreamRouter: UpstreamRouter | undefined, model: string) {
+  const maybe = upstreamRouter as UpstreamRouter & {
+    resolveDirectCandidates?: (requestedModel: string) => Array<{ adapter: unknown; entry?: unknown }>;
+  };
+  return typeof maybe?.resolveDirectCandidates === "function"
+    ? maybe.resolveDirectCandidates(model)
+    : undefined;
+}
+
 function syncOutputTextFromOutput(response: Record<string, unknown>): void {
   if (!Array.isArray(response.output)) return;
   const outputText = (response.output as unknown[])
@@ -168,6 +177,142 @@ function buildResponsesStreamError(status: number, message: string): string {
   return buildResponseFailedEvent(null, classifyResponsesStreamError(status, message));
 }
 
+interface PassthroughEventNormalizationState {
+  createdAt: number;
+  textItemId: string | null;
+  textBuffer: string;
+  textPartAdded: boolean;
+  textPartDone: boolean;
+  textOutputItemAdded: boolean;
+  textOutputItemDone: boolean;
+}
+
+function ensureTextItemId(state: PassthroughEventNormalizationState): string {
+  state.textItemId ??= `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  return state.textItemId;
+}
+
+function normalizePassthroughEventData(
+  event: string,
+  data: unknown,
+  model: string,
+  state: PassthroughEventNormalizationState,
+  responseId: string | null,
+): unknown {
+  if (!isRecord(data)) {
+    return { type: event };
+  }
+
+  const normalized: Record<string, unknown> = { ...data };
+  if (typeof normalized.type !== "string") {
+    normalized.type = event;
+  }
+
+  if (event === "response.output_text.delta") {
+    if (typeof normalized.item_id !== "string") normalized.item_id = ensureTextItemId(state);
+    if (typeof normalized.output_index !== "number") normalized.output_index = 0;
+    if (typeof normalized.content_index !== "number") normalized.content_index = 0;
+    if (typeof normalized.delta === "string") {
+      state.textBuffer += normalized.delta;
+    }
+    return normalized;
+  }
+
+  if (event === "response.output_item.added" || event === "response.output_item.done") {
+    if (typeof normalized.output_index !== "number") normalized.output_index = 0;
+    if (isRecord(normalized.item) && typeof normalized.item.id === "string") {
+      const itemType = typeof normalized.item.type === "string" ? normalized.item.type : "";
+      if (itemType === "message" || itemType === "output_text") {
+        state.textItemId = normalized.item.id;
+        if (event === "response.output_item.added") state.textOutputItemAdded = true;
+        if (event === "response.output_item.done") state.textOutputItemDone = true;
+      }
+    }
+    return normalized;
+  }
+
+  if (event === "response.content_part.added" || event === "response.content_part.done") {
+    if (typeof normalized.item_id !== "string") normalized.item_id = ensureTextItemId(state);
+    if (typeof normalized.output_index !== "number") normalized.output_index = 0;
+    if (typeof normalized.content_index !== "number") normalized.content_index = 0;
+    if (isRecord(normalized.part)) {
+      if (typeof normalized.part.type !== "string") normalized.part.type = "output_text";
+      if (!Array.isArray(normalized.part.annotations)) normalized.part.annotations = [];
+    }
+    if (event === "response.content_part.added") state.textPartAdded = true;
+    if (event === "response.content_part.done") state.textPartDone = true;
+    return normalized;
+  }
+
+  const shouldPatchResponseEnvelope =
+    event === "response.created" ||
+    event === "response.in_progress" ||
+    event === "response.completed" ||
+    event === "response.incomplete" ||
+    event === "response.failed" ||
+    event === "response.queued";
+
+  if (!shouldPatchResponseEnvelope) {
+    return normalized;
+  }
+
+  const response = isRecord(normalized.response) ? { ...normalized.response } : {};
+  if (responseId && typeof response.id !== "string") response.id = responseId;
+
+  if (
+    event === "response.created" ||
+    event === "response.in_progress" ||
+    event === "response.completed" ||
+    event === "response.incomplete" ||
+    event === "response.queued"
+  ) {
+    if (typeof response.created_at !== "number") response.created_at = state.createdAt;
+    if (typeof response.model !== "string") response.model = model;
+  }
+
+  if (event === "response.created" && typeof response.status !== "string") {
+    response.status = "in_progress";
+  }
+  if (event === "response.in_progress" && typeof response.status !== "string") {
+    response.status = "in_progress";
+  }
+  if (event === "response.completed" && typeof response.status !== "string") {
+    response.status = "completed";
+  }
+
+  if ((event === "response.completed" || event === "response.incomplete") && !isRecord(response.usage)) {
+    response.usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      input_tokens_details: {},
+      output_tokens_details: {},
+    };
+  }
+
+  if (event === "response.completed") {
+    if (!Array.isArray(response.output) && state.textBuffer) {
+      state.textItemId ??= `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+      response.output = [{
+        type: "message",
+        id: state.textItemId,
+        role: "assistant",
+        status: "completed",
+        content: [{
+          type: "output_text",
+          text: state.textBuffer,
+          annotations: [],
+        }],
+      }];
+    }
+    if (typeof response.output_text !== "string" && state.textBuffer) {
+      response.output_text = state.textBuffer;
+    }
+  }
+
+  normalized.response = response;
+  return normalized;
+}
+
 /** Extract usage from a response.completed payload, including cached_tokens
  *  (nested in input_tokens_details per the OpenAI Responses API contract). */
 export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number } {
@@ -208,6 +353,15 @@ export async function* streamPassthrough(
   // This means the client receives zero incremental text — all text arrives at once
   // after response.completed. This is a known tradeoff for tuple reconversion correctness.
   let tupleTextBuffer = tupleSchema ? "" : null;
+  const normalizationState: PassthroughEventNormalizationState = {
+    createdAt: Math.floor(Date.now() / 1000),
+    textItemId: null,
+    textBuffer: "",
+    textPartAdded: false,
+    textPartDone: false,
+    textOutputItemAdded: false,
+    textOutputItemDone: false,
+  };
   let sawTerminal = false;
   let responseId: string | null = null;
 
@@ -250,6 +404,46 @@ export async function* streamPassthrough(
       responseId = extractResponseIdFromEventData(raw.data) ?? responseId;
       if (isTerminalResponsesEvent(raw.event)) sawTerminal = true;
 
+      if (raw.event === "response.output_text.delta" && !normalizationState.textOutputItemAdded) {
+        const textItemId = ensureTextItemId(normalizationState);
+        const addedEvent = normalizePassthroughEventData(
+          "response.output_item.added",
+          {
+            item: {
+              id: textItemId,
+              type: "message",
+              role: "assistant",
+              status: "in_progress",
+              content: [],
+            },
+            output_index: 0,
+          },
+          model,
+          normalizationState,
+          responseId,
+        );
+        yield `event: response.output_item.added\ndata: ${JSON.stringify(addedEvent)}\n\n`;
+      }
+      if (raw.event === "response.output_text.delta" && !normalizationState.textPartAdded) {
+        const contentPartAdded = normalizePassthroughEventData(
+          "response.content_part.added",
+          {
+            item_id: ensureTextItemId(normalizationState),
+            output_index: 0,
+            content_index: 0,
+            part: {
+              type: "output_text",
+              text: "",
+              annotations: [],
+            },
+          },
+          model,
+          normalizationState,
+          responseId,
+        );
+        yield `event: response.content_part.added\ndata: ${JSON.stringify(contentPartAdded)}\n\n`;
+      }
+
       // Buffer text deltas when tuple reconversion is active
       if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
         const data = raw.data;
@@ -270,7 +464,14 @@ export async function* streamPassthrough(
             console.warn("[tuple-reconvert] streaming JSON parse failed, emitting raw text:", e);
           }
           // Emit a single text delta with reconverted content
-          yield `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: reconvertedText })}\n\n`;
+          const tupleDelta = normalizePassthroughEventData(
+            "response.output_text.delta",
+            { type: "response.output_text.delta", delta: reconvertedText },
+            model,
+            normalizationState,
+            responseId,
+          );
+          yield `event: response.output_text.delta\ndata: ${JSON.stringify(tupleDelta)}\n\n`;
         }
         // Patch the completed event's output text if present
         const data = raw.data;
@@ -297,8 +498,67 @@ export async function* streamPassthrough(
         }
       }
 
+      if (
+        raw.event === "response.completed" &&
+        normalizationState.textOutputItemAdded &&
+        normalizationState.textPartAdded &&
+        !normalizationState.textPartDone
+      ) {
+        const contentPartDone = normalizePassthroughEventData(
+          "response.content_part.done",
+          {
+            item_id: ensureTextItemId(normalizationState),
+            output_index: 0,
+            content_index: 0,
+            part: {
+              type: "output_text",
+              text: normalizationState.textBuffer,
+              annotations: [],
+            },
+          },
+          model,
+          normalizationState,
+          responseId,
+        );
+        yield `event: response.content_part.done\ndata: ${JSON.stringify(contentPartDone)}\n\n`;
+      }
+      if (
+        raw.event === "response.completed" &&
+        normalizationState.textOutputItemAdded &&
+        !normalizationState.textOutputItemDone
+      ) {
+        const outputItemDone = normalizePassthroughEventData(
+          "response.output_item.done",
+          {
+            output_index: 0,
+            item: {
+              id: ensureTextItemId(normalizationState),
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{
+                type: "output_text",
+                text: normalizationState.textBuffer,
+                annotations: [],
+              }],
+            },
+          },
+          model,
+          normalizationState,
+          responseId,
+        );
+        yield `event: response.output_item.done\ndata: ${JSON.stringify(outputItemDone)}\n\n`;
+      }
+
       // Re-emit raw SSE event
-      yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
+      const normalizedData = normalizePassthroughEventData(
+        raw.event,
+        raw.data,
+        model,
+        normalizationState,
+        responseId,
+      );
+      yield `event: ${raw.event}\ndata: ${JSON.stringify(normalizedData)}\n\n`;
 
       // Extract usage and responseId for account pool bookkeeping
       if (
@@ -624,9 +884,9 @@ async function handleCompact(
   }
 
   const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
-  if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
-    const directModel = compactRouteMatch.resolvedModel ?? rawModel;
-    const directReq = {
+    if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
+      const directModel = compactRouteMatch.resolvedModel ?? rawModel;
+      const directReq = {
       codexRequest: {
         model: directModel,
         input: compactRequest.input,
@@ -639,12 +899,19 @@ async function handleCompact(
           : {}),
         ...(compactRequest.reasoning ? { reasoning: compactRequest.reasoning } : {}),
         ...(compactRequest.text ? { text: compactRequest.text } : {}),
-      },
-      model: directModel,
-      isStreaming: false,
-    };
-    return handleDirectRequest({ c, upstream: compactRouteMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
-  }
+        },
+        model: directModel,
+        isStreaming: false,
+      };
+      return handleDirectRequest({
+        c,
+        upstream: compactRouteMatch.adapter,
+        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, rawModel),
+        upstreamEntry: compactRouteMatch.kind === "api-key" ? compactRouteMatch.entry : undefined,
+        req: directReq,
+        fmt: PASSTHROUGH_FORMAT,
+      });
+    }
 
   // Acquire account
   const TAG = "Compact";
@@ -912,7 +1179,14 @@ export function createResponsesRoutes(
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directModel = routeMatch.resolvedModel ?? rawModel;
       const directReq = { ...proxyReq, model: directModel, codexRequest: { ...codexRequest, model: directModel } };
-      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
+      return handleDirectRequest({
+        c,
+        upstream: routeMatch.adapter,
+        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, rawModel),
+        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        req: directReq,
+        fmt: PASSTHROUGH_FORMAT,
+      });
     }
 
     return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });

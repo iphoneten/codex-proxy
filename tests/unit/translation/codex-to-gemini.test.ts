@@ -11,6 +11,8 @@ import {
   emptyStream,
   multiToolCallStream,
   usageStream,
+  prematureCloseAfterTextStream,
+  prematureCloseAfterReasoningStream,
 } from "@fixtures/sse-streams.js";
 
 let mockEvents: ExtractedEvent[] = [];
@@ -76,6 +78,14 @@ describe("streamCodexToGemini", () => {
       .rejects.toMatchObject({ status: 429 });
   });
 
+  it("throws UpstreamPrematureCloseError when stream ends without final STOP chunk", async () => {
+    const { UpstreamPrematureCloseError } = await import(
+      "@src/translation/codex-event-extractor.js"
+    );
+    await expect(collectStreamOutput(prematureCloseAfterTextStream()))
+      .rejects.toBeInstanceOf(UpstreamPrematureCloseError);
+  });
+
   it("injects error text for empty response", async () => {
     const chunks = await collectStreamOutput(emptyStream());
     const dataChunks = chunks.filter((c) => c.startsWith("data: "));
@@ -116,6 +126,15 @@ describe("collectCodexToGeminiResponse", () => {
     mockEvents = emptyStream();
     await expect(collectCodexToGeminiResponse(fakeCodexApi, fakeResponse, "gpt-5.4"))
       .rejects.toThrow("empty response");
+  });
+
+  it("throws UpstreamPrematureCloseError when stream ends after reasoning without response.completed", async () => {
+    const { UpstreamPrematureCloseError } = await import(
+      "@src/translation/codex-event-extractor.js"
+    );
+    mockEvents = prematureCloseAfterReasoningStream();
+    await expect(collectCodexToGeminiResponse(fakeCodexApi, fakeResponse, "gpt-5.4"))
+      .rejects.toBeInstanceOf(UpstreamPrematureCloseError);
   });
 });
 

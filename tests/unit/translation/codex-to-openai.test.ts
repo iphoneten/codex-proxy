@@ -20,6 +20,7 @@ import {
   usageStream,
   toolCallNoDeltaStream,
   prematureCloseAfterReasoningStream,
+  prematureCloseAfterTextStream,
 } from "@fixtures/sse-streams.js";
 import {
   createCreated,
@@ -93,6 +94,14 @@ describe("streamCodexToOpenAI", () => {
   it("throws CodexApiError on upstream error events", async () => {
     await expect(collectStreamOutput(errorStream()))
       .rejects.toMatchObject({ status: 429 });
+  });
+
+  it("throws UpstreamPrematureCloseError when stream ends without response.completed", async () => {
+    const { UpstreamPrematureCloseError } = await import(
+      "@src/translation/codex-event-extractor.js"
+    );
+    await expect(collectStreamOutput(prematureCloseAfterTextStream()))
+      .rejects.toBeInstanceOf(UpstreamPrematureCloseError);
   });
 
   it("injects error text for empty response", async () => {

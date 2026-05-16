@@ -5,10 +5,14 @@ export type ApiKeyProvider = "anthropic" | "openai" | "gemini" | "openrouter" | 
 export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
-  model: string;
-  apiKey: string; // masked
+  model?: string;
+  models: string[];
+  apiKey: string;
+  apiKeyMasked?: string;
   baseUrl: string;
   label: string | null;
+  priority: number;
+  maxRetries: number;
   status: "active" | "disabled" | "error";
   addedAt: string;
   lastUsedAt: string | null;
@@ -43,7 +47,11 @@ export function useApiKeys() {
     try {
       const resp = await fetch("/auth/api-keys");
       const data = await resp.json();
-      setKeys(data.keys || []);
+      setKeys((data.keys || []).map((entry: ApiKeyEntry) => ({
+        ...entry,
+        apiKey: "",
+        apiKeyMasked: entry.apiKeyMasked ?? "",
+      })));
     } catch {
       setKeys([]);
     } finally {
@@ -72,6 +80,8 @@ export function useApiKeys() {
     apiKey: string;
     baseUrl?: string;
     label?: string | null;
+    priority?: number;
+    maxRetries?: number;
   }): Promise<{ ok: boolean; error?: string }> => {
     try {
       const resp = await fetch("/auth/api-keys", {
@@ -115,6 +125,104 @@ export function useApiKeys() {
       });
       await loadKeys();
     } catch { /* ignore */ }
+  }, [loadKeys]);
+
+  const updateRouting = useCallback(async (id: string, routing: { priority?: number; maxRetries?: number }) => {
+    try {
+      await fetch(`/auth/api-keys/${id}/routing`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(routing),
+      });
+      await loadKeys();
+    } catch { /* ignore */ }
+  }, [loadKeys]);
+
+  const updateBaseUrl = useCallback(async (id: string, baseUrl: string) => {
+    try {
+      await fetch(`/auth/api-keys/${id}/base-url`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl }),
+      });
+      await loadKeys();
+    } catch { /* ignore */ }
+  }, [loadKeys]);
+
+  const updateApiKey = useCallback(async (id: string, apiKey: string) => {
+    try {
+      await fetch(`/auth/api-keys/${id}/api-key`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      await loadKeys();
+    } catch { /* ignore */ }
+  }, [loadKeys]);
+
+  const revealApiKey = useCallback(async (id: string): Promise<{ ok: true; apiKey: string } | { ok: false; error: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/api-key`);
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to load API key" };
+      return { ok: true, apiKey: typeof data.apiKey === "string" ? data.apiKey : "" };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, []);
+
+  const loadEntryModels = useCallback(async (id: string): Promise<{ ok: true; models: string[] } | { ok: false; error: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/models`);
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to load models" };
+      return { ok: true, models: Array.isArray(data.models) ? data.models : [] };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, []);
+
+  const refreshEntryModels = useCallback(async (id: string): Promise<{ ok: true; models: string[] } | { ok: false; error: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/models/load`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to fetch models" };
+      return { ok: true, models: Array.isArray(data.models) ? data.models : [] };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, []);
+
+  const addEntryModels = useCallback(async (id: string, models: string[]): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/models`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to add models" };
+      await loadKeys();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, [loadKeys]);
+
+  const removeEntryModels = useCallback(async (id: string, models: string[]): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/models`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to remove models" };
+      await loadKeys();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
   }, [loadKeys]);
 
   const importKeys = useCallback(async (file: File): Promise<{ added: number; failed: number; errors: string[] }> => {
@@ -178,6 +286,14 @@ export function useApiKeys() {
     deleteKey,
     toggleStatus,
     updateLabel,
+    updateBaseUrl,
+    updateApiKey,
+    revealApiKey,
+    loadEntryModels,
+    refreshEntryModels,
+    addEntryModels,
+    removeEntryModels,
+    updateRouting,
     importKeys,
     exportKeys,
     fetchCustomModels,

@@ -334,6 +334,45 @@ describe("GET /v1/models with runtime API keys", () => {
     expect(body.data.some((m: { id: string }) => m.id === "gpt-5.4")).toBe(true);
   });
 
+  it("returns the model list for legacy singular /v1/model path", async () => {
+    const pool = new ApiKeyPool(createApiKeyMemoryPersistence());
+    pool.add({ provider: "custom", model: "my-runtime-model", apiKey: "k1", baseUrl: "https://example.com/v1" });
+
+    const app = createModelRoutes(pool);
+    const res = await app.request("/v1/model");
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.object).toBe("list");
+    expect(body.data.some((m: { id: string }) => m.id === "my-runtime-model")).toBe(true);
+  });
+
+  it("returns a compatibility payload for the /v1 base path", async () => {
+    const app = createModelRoutes();
+
+    const res = await app.request("/v1");
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toMatchObject({
+      object: "service",
+      service: "codex-proxy",
+      basePath: "/v1",
+    });
+    expect(body.endpoints).toContain("/v1/chat/completions");
+    expect(body.endpoints).toContain("/v1/models");
+  });
+
+  it("returns a compatibility payload for the /v1/ base path", async () => {
+    const app = createModelRoutes();
+
+    const res = await app.request("/v1/");
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.basePath).toBe("/v1");
+  });
+
   it("excludes disabled API key models from /v1/models", async () => {
     const pool = new ApiKeyPool(createApiKeyMemoryPersistence());
     const added = pool.add({ provider: "custom", model: "disabled-runtime-model", apiKey: "k1", baseUrl: "https://example.com/v1" });

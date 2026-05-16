@@ -19,6 +19,18 @@ export interface UsageSummary {
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
+  upstream_breakdown: Array<{
+    key: string;
+    provider: string;
+    label: string;
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+    image_input_tokens: number;
+    image_output_tokens: number;
+    request_count: number;
+    updated_at: string;
+  }>;
 }
 
 export interface UsageDataPoint {

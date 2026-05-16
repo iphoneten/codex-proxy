@@ -5,6 +5,7 @@ import {
   type ErrorGroup,
 } from "../../../shared/hooks/use-error-logs";
 import { useT } from "../../../shared/i18n/context";
+import { CopyButton } from "../components/CopyButton";
 
 function sourceBadgeClass(source: string): string {
   switch (source) {
@@ -21,6 +22,28 @@ function sourceBadgeClass(source: string): string {
 
 function hasContext(group: ErrorGroup): boolean {
   return group.sample_context !== undefined && Object.keys(group.sample_context).length > 0;
+}
+
+function buildErrorDetailsText(group: ErrorGroup): string {
+  const lines = [
+    `name: ${group.name}`,
+    `source: ${group.source}`,
+    `count: ${group.count}`,
+    `last_seen: ${group.last_seen}`,
+    `message: ${group.message}`,
+  ];
+
+  if (hasContext(group)) {
+    lines.push("", "context:");
+    lines.push(JSON.stringify(group.sample_context, null, 2));
+  }
+
+  if (group.sample_stack) {
+    lines.push("", "stack:");
+    lines.push(group.sample_stack);
+  }
+
+  return lines.join("\n");
 }
 
 function ErrorRow({ group }: { group: ErrorGroup }) {
@@ -68,6 +91,12 @@ function ErrorRow({ group }: { group: ErrorGroup }) {
       </button>
       {open && (group.sample_stack || showContext) && (
         <div class="px-4 pb-4 border-t border-gray-100 dark:border-border-dark/50">
+          <div class="flex justify-end pt-3">
+            <CopyButton
+              variant="label"
+              getText={() => buildErrorDetailsText(group)}
+            />
+          </div>
           {showContext && (
             <pre class="mt-3 text-[11px] font-mono whitespace-pre-wrap break-all text-slate-600 dark:text-text-dim leading-relaxed bg-slate-50 dark:bg-bg-dark/40 rounded-lg p-3 overflow-x-auto">
               {JSON.stringify(group.sample_context, null, 2)}

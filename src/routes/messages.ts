@@ -29,6 +29,15 @@ import { extractAnthropicClientConversationId } from "./shared/anthropic-session
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 
+function resolveDirectCandidatesSafe(upstreamRouter: UpstreamRouter | undefined, model: string) {
+  const maybe = upstreamRouter as UpstreamRouter & {
+    resolveDirectCandidates?: (requestedModel: string) => Array<{ adapter: unknown; entry?: unknown }>;
+  };
+  return typeof maybe?.resolveDirectCandidates === "function"
+    ? maybe.resolveDirectCandidates(model)
+    : undefined;
+}
+
 function makeError(
   type: AnthropicErrorType,
   message: string,
@@ -47,6 +56,9 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
       ),
     format429: (msg) => makeError("rate_limit_error", msg),
     formatError: (_status, msg) => makeError("api_error", msg),
+    formatStreamError: (status, msg) => `event: error\ndata: ${JSON.stringify(
+      status === 429 ? makeError("rate_limit_error", msg) : makeError("api_error", msg),
+    )}\n\n`,
     streamTranslator: ({
       api,
       response,
@@ -164,7 +176,14 @@ export function createMessagesRoutes(
         model: directModel,
         codexRequest: { ...codexRequest, model: directModel },
       };
-      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
+      return handleDirectRequest({
+        c,
+        upstream: routeMatch.adapter,
+        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, req.model),
+        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        req: directReq,
+        fmt,
+      });
     }
 
     return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });

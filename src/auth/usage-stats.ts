@@ -21,6 +21,7 @@ import { resolve, dirname } from "path";
 import { getConfig } from "../config.js";
 import { getDataDir } from "../paths.js";
 import type { AccountPool } from "./account-pool.js";
+import { getDirectUpstreamUsageStore, type DirectUpstreamUsageEntry } from "../usage/direct-upstream-usage.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ export interface UsageSummary {
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
+  upstream_breakdown: DirectUpstreamUsageEntry[];
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -304,6 +306,7 @@ export class UsageStatsStore {
   /** Get current cumulative summary (baseline + live pool data). */
   getSummary(pool: AccountPool): UsageSummary {
     const live = this.poolTotals(pool);
+    const upstreamBreakdown = getDirectUpstreamUsageStore().getBreakdown();
 
     return {
       total_input_tokens: this.baseline.input_tokens + live.input_tokens,
@@ -316,6 +319,7 @@ export class UsageStatsStore {
       total_request_count: this.baseline.request_count + live.request_count,
       total_accounts: live.total_accounts,
       active_accounts: live.active_accounts,
+      upstream_breakdown: upstreamBreakdown,
     };
   }
 

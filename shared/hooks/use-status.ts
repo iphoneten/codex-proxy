@@ -65,13 +65,18 @@ export function useStatus(accountCount: number) {
       if (ids.length > 0) {
         setModels(ids);
         if (isInitial) {
-          const defaultModel = catalogData.find((m) => m.isDefault)?.id ?? ids[0] ?? "";
+          const configuredDefault = catalogData.find((m) => m.isDefault)?.id;
+          const defaultModel = configuredDefault && ids.includes(configuredDefault)
+            ? configuredDefault
+            : (ids[0] ?? "");
           setSelectedModel(defaultModel);
         } else {
           // On refresh: only reset if current selection is no longer available
           setSelectedModel((prev) => {
             if (ids.includes(prev)) return prev;
-            return catalogData.find((m) => m.isDefault)?.id ?? ids[0] ?? prev;
+            const configuredDefault = catalogData.find((m) => m.isDefault)?.id;
+            if (configuredDefault && ids.includes(configuredDefault)) return configuredDefault;
+            return ids[0] ?? prev;
           });
         }
       }
@@ -85,11 +90,14 @@ export function useStatus(accountCount: number) {
 
     async function loadStatus() {
       try {
-        const resp = await fetch("/auth/status");
-        const data = await resp.json();
-        if (!data.authenticated) return;
         setBaseUrl(`${window.location.origin}/v1`);
-        setApiKey(data.proxy_api_key || "any-string");
+        const [statusResp, settingsResp] = await Promise.all([
+          fetch("/auth/status"),
+          fetch("/admin/settings"),
+        ]);
+        const _statusData = await statusResp.json();
+        const settingsData = await settingsResp.json() as { proxy_api_key?: string | null };
+        setApiKey(settingsData.proxy_api_key || "");
         await fetchModels(true);
 
         // Refresh model list every 60s to pick up dynamic backend changes

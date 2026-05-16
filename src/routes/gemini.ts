@@ -28,6 +28,15 @@ import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 
+function resolveDirectCandidatesSafe(upstreamRouter: UpstreamRouter | undefined, model: string) {
+  const maybe = upstreamRouter as UpstreamRouter & {
+    resolveDirectCandidates?: (requestedModel: string) => Array<{ adapter: unknown; entry?: unknown }>;
+  };
+  return typeof maybe?.resolveDirectCandidates === "function"
+    ? maybe.resolveDirectCandidates(model)
+    : undefined;
+}
+
 function makeError(
   code: number,
   message: string,
@@ -69,6 +78,9 @@ const GEMINI_FORMAT: FormatAdapter = {
     ),
   format429: (msg) => makeError(429, msg, "RESOURCE_EXHAUSTED"),
   formatError: (status, msg) => makeError(status, msg),
+  formatStreamError: (status, msg) => `data: ${JSON.stringify(
+    status === 429 ? makeError(429, msg, "RESOURCE_EXHAUSTED") : makeError(status, msg),
+  )}\n\n`,
   streamTranslator: ({ api, response, model, onUsage, onResponseId, onResponseCompleted, tupleSchema }) =>
     streamCodexToGemini(api, response, model, onUsage, onResponseId, tupleSchema, onResponseCompleted),
   collectTranslator: ({ api, response, model, tupleSchema }) =>
@@ -174,7 +186,14 @@ export function createGeminiRoutes(
         model: directModel,
         codexRequest: { ...codexRequest, model: directModel },
       };
-      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: GEMINI_FORMAT });
+      return handleDirectRequest({
+        c,
+        upstream: routeMatch.adapter,
+        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, geminiModel),
+        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        req: directReq,
+        fmt: GEMINI_FORMAT,
+      });
     }
 
     return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: GEMINI_FORMAT, proxyPool });

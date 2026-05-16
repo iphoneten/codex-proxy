@@ -66,7 +66,7 @@ export interface TlsTransport {
 }
 
 let _transport: TlsTransport | null = null;
-let _transportType: "native" | "none" = "none";
+let _transportType: "native" | "node" | "none" = "none";
 
 /**
  * Initialize the transport singleton. Must be called once at startup
@@ -75,16 +75,23 @@ let _transportType: "native" | "none" = "none";
 export async function initTransport(): Promise<TlsTransport> {
   if (_transport) return _transport;
 
-  if (!isNativeAvailable()) {
-    throw new Error(
-      "Native transport addon not found. Ensure native/codex-tls.*.node is present.",
-    );
+  if (isNativeAvailable()) {
+    try {
+      const { createNativeTransport } = await import("./native-transport.js");
+      _transport = await createNativeTransport();
+      _transportType = "native";
+      console.log("[TLS] Using native (rustls) transport");
+      return _transport;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[TLS] Native transport unavailable, falling back to undici: ${message}`);
+    }
   }
 
-  const { createNativeTransport } = await import("./native-transport.js");
-  _transport = await createNativeTransport();
-  _transportType = "native";
-  console.log("[TLS] Using native (rustls) transport");
+  const { createNodeTransport } = await import("./node-transport.js");
+  _transport = await createNodeTransport();
+  _transportType = "node";
+  console.log("[TLS] Using node (undici) transport");
   return _transport;
 }
 
@@ -98,7 +105,7 @@ export function getTransport(): TlsTransport {
 
 /** Get transport diagnostic info. */
 export function getTransportInfo(): {
-  type: "native" | "none";
+  type: "native" | "node" | "none";
   initialized: boolean;
   impersonate: boolean;
 } {

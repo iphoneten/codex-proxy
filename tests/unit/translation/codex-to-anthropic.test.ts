@@ -12,6 +12,8 @@ import {
   emptyStream,
   multiToolCallStream,
   usageStream,
+  prematureCloseAfterTextStream,
+  prematureCloseAfterReasoningStream,
 } from "@fixtures/sse-streams.js";
 
 let mockEvents: ExtractedEvent[] = [];
@@ -115,6 +117,14 @@ describe("streamCodexToAnthropic", () => {
     await expect(collectStreamOutput(errorStream()))
       .rejects.toMatchObject({ status: 429 });
   });
+
+  it("throws UpstreamPrematureCloseError when stream ends without message completion", async () => {
+    const { UpstreamPrematureCloseError } = await import(
+      "@src/translation/codex-event-extractor.js"
+    );
+    await expect(collectStreamOutput(prematureCloseAfterTextStream()))
+      .rejects.toBeInstanceOf(UpstreamPrematureCloseError);
+  });
 });
 
 describe("collectCodexToAnthropicResponse", () => {
@@ -162,6 +172,15 @@ describe("collectCodexToAnthropicResponse", () => {
     mockEvents = emptyStream();
     await expect(collectCodexToAnthropicResponse(fakeCodexApi, fakeResponse, "gpt-5.4"))
       .rejects.toThrow("empty response");
+  });
+
+  it("throws UpstreamPrematureCloseError when stream ends after reasoning without response.completed", async () => {
+    const { UpstreamPrematureCloseError } = await import(
+      "@src/translation/codex-event-extractor.js"
+    );
+    mockEvents = prematureCloseAfterReasoningStream();
+    await expect(collectCodexToAnthropicResponse(fakeCodexApi, fakeResponse, "gpt-5.4", true))
+      .rejects.toBeInstanceOf(UpstreamPrematureCloseError);
   });
 });
 

@@ -198,6 +198,8 @@ describe("streamPassthrough premature close handling", () => {
 
     expect(events.map((event) => event.event)).toEqual([
       "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
       "response.output_text.delta",
       "response.failed",
     ]);
@@ -216,6 +218,124 @@ describe("streamPassthrough premature close handling", () => {
         code: "stream_disconnected",
         message: "Upstream stream closed before response.completed",
       },
+    });
+  });
+
+  it("normalizes response.created to include type and minimal response metadata", async () => {
+    const events = await collectStreamEvents([
+      { event: "response.created", data: { response: { id: "resp_created_1" } } },
+      { event: "response.completed", data: { response: { id: "resp_created_1", usage: { input_tokens: 1, output_tokens: 2 } } } },
+    ]);
+
+    expect(events[0]?.event).toBe("response.created");
+    expect(events[0]?.data).toMatchObject({
+      type: "response.created",
+      response: {
+        id: "resp_created_1",
+        model: "test-model",
+        status: "in_progress",
+      },
+    });
+    expect(typeof events[0]?.data.response).toBe("object");
+    expect(typeof (events[0]?.data.response as Record<string, unknown>).created_at).toBe("number");
+  });
+
+  it("normalizes response.output_text.delta to include type and item_id", async () => {
+    const events = await collectStreamEvents([
+      { event: "response.created", data: { response: { id: "resp_delta_1" } } },
+      { event: "response.output_text.delta", data: { delta: "hello" } },
+      { event: "response.completed", data: { response: { id: "resp_delta_1", usage: { input_tokens: 1, output_tokens: 1 } } } },
+    ]);
+
+    const deltaEvent = events.find((event) => event.event === "response.output_text.delta");
+    expect(deltaEvent?.data).toMatchObject({
+      type: "response.output_text.delta",
+      delta: "hello",
+      output_index: 0,
+      content_index: 0,
+    });
+    expect(typeof deltaEvent?.data.item_id).toBe("string");
+  });
+
+  it("synthesizes message/content-part lifecycle around plain text delta streams", async () => {
+    const events = await collectStreamEvents([
+      { event: "response.created", data: { response: { id: "resp_parts_1" } } },
+      { event: "response.output_text.delta", data: { delta: "hello" } },
+      { event: "response.completed", data: { response: { id: "resp_parts_1" } } },
+    ]);
+
+    expect(events.map((event) => event.event)).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+
+    const outputItemAdded = events.find((event) => event.event === "response.output_item.added");
+    expect(outputItemAdded?.data).toMatchObject({
+      type: "response.output_item.added",
+      output_index: 0,
+      item: {
+        type: "message",
+        role: "assistant",
+        status: "in_progress",
+      },
+    });
+
+    const contentPartAdded = events.find((event) => event.event === "response.content_part.added");
+    expect(contentPartAdded?.data).toMatchObject({
+      type: "response.content_part.added",
+      output_index: 0,
+      content_index: 0,
+      part: {
+        type: "output_text",
+        text: "",
+      },
+    });
+
+    const outputItemDone = events.find((event) => event.event === "response.output_item.done");
+    expect(outputItemDone?.data).toMatchObject({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "message",
+        role: "assistant",
+        status: "completed",
+      },
+    });
+
+    const completed = events.find((event) => event.event === "response.completed");
+    expect(completed?.data).toMatchObject({
+      type: "response.completed",
+      response: {
+        output_text: "hello",
+      },
+    });
+  });
+
+  it("normalizes response.completed to include type, usage fallback, and output_text", async () => {
+    const events = await collectStreamEvents([
+      { event: "response.created", data: { response: { id: "resp_completed_1" } } },
+      { event: "response.output_text.delta", data: { delta: "world" } },
+      { event: "response.completed", data: { response: { id: "resp_completed_1" } } },
+    ]);
+
+    const completedEvent = events.find((event) => event.event === "response.completed");
+    expect(completedEvent?.data).toMatchObject({
+      type: "response.completed",
+      response: {
+        id: "resp_completed_1",
+        model: "test-model",
+        status: "completed",
+        output_text: "world",
+      },
+    });
+    expect((completedEvent?.data.response as Record<string, unknown>).usage).toMatchObject({
+      input_tokens: 0,
+      output_tokens: 0,
     });
   });
 

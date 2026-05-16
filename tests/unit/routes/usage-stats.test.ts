@@ -8,6 +8,23 @@ vi.mock("@src/paths.js", () => ({
   getDataDir: vi.fn(() => "/tmp/test-data"),
 }));
 
+vi.mock("@src/usage/direct-upstream-usage.js", () => ({
+  getDirectUpstreamUsageStore: () => ({
+    getBreakdown: () => [{
+      key: "api-key:1",
+      provider: "custom",
+      label: "codex1",
+      input_tokens: 111,
+      output_tokens: 22,
+      cached_tokens: 3,
+      image_input_tokens: 0,
+      image_output_tokens: 0,
+      request_count: 4,
+      updated_at: "2026-05-16T12:00:00.000Z",
+    }],
+  }),
+}));
+
 import { Hono } from "hono";
 import { UsageStatsStore, type UsageStatsPersistence, type UsageSnapshot } from "@src/auth/usage-stats.js";
 import { createUsageStatsRoutes } from "@src/routes/admin/usage-stats.js";
@@ -50,6 +67,18 @@ describe("usage stats routes", () => {
       expect(body.total_request_count).toBe(20);
       expect(body.total_accounts).toBe(1);
       expect(body.active_accounts).toBe(1);
+      expect(body.upstream_breakdown).toEqual([{
+        key: "api-key:1",
+        provider: "custom",
+        label: "codex1",
+        input_tokens: 111,
+        output_tokens: 22,
+        cached_tokens: 3,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        request_count: 4,
+        updated_at: "2026-05-16T12:00:00.000Z",
+      }]);
     });
 
     it("exposes total_cached_tokens for cache-hit-rate computation", async () => {

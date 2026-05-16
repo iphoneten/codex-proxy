@@ -17,7 +17,12 @@ import type {
   AnthropicMessagesResponse,
   AnthropicUsage,
 } from "../types/anthropic.js";
-import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import {
+  iterateCodexEvents,
+  EmptyResponseError,
+  UpstreamPrematureCloseError,
+  type UsageInfo,
+} from "./codex-event-extractor.js";
 import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
 
 interface CacheUsageHint {
@@ -80,6 +85,10 @@ export async function* streamCodexToAnthropic(
   let thinkingBlockStarted = false;
   const functionCallIds = new Set<string>();
   const callIdsWithDeltas = new Set<string>();
+  let sawTerminalEvent = false;
+  let responseId: string | null = null;
+  let eventCount = 0;
+  let hadReasoning = false;
 
   const publishFunctionCallId = (callId: string): void => {
     if (functionCallIds.has(callId)) return;
@@ -139,7 +148,9 @@ export async function* streamCodexToAnthropic(
 
   // 2. Process Codex stream events
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    eventCount++;
     if (evt.responseId) onResponseId?.(evt.responseId);
+    if (evt.responseId) responseId = evt.responseId;
 
     // Handle upstream error events
     if (evt.error) {
@@ -149,6 +160,7 @@ export async function* streamCodexToAnthropic(
     // Handle reasoning delta → thinking block (only if client wants thinking)
     if (evt.reasoningDelta && wantThinking) {
       hasContent = true;
+      hadReasoning = true;
       yield* closeTextIfOpen();
       // Open thinking block if not already open
       if (!thinkingBlockStarted) {
@@ -237,6 +249,7 @@ export async function* streamCodexToAnthropic(
       }
 
       case "response.completed": {
+        sawTerminalEvent = true;
         if (evt.usage) {
           inputTokens = evt.usage.input_tokens;
           outputTokens = evt.usage.output_tokens;
@@ -262,6 +275,10 @@ export async function* streamCodexToAnthropic(
         break;
       }
     }
+  }
+
+  if (!sawTerminalEvent) {
+    throw new UpstreamPrematureCloseError(responseId, hadReasoning, eventCount);
   }
 
   // 3. Close any open blocks
@@ -313,21 +330,31 @@ export async function collectCodexToAnthropicResponse(
   let cachedTokens: number | undefined;
   let responseId: string | null = null;
   const functionCallIds = new Set<string>();
+  let sawTerminalEvent = false;
+  let eventCount = 0;
+  let hadReasoning = false;
 
   // Collect tool calls
   const toolUseBlocks: AnthropicContentBlock[] = [];
 
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    eventCount++;
     if (evt.responseId) responseId = evt.responseId;
     if (evt.error) {
       throw codexApiErrorFromEvent(evt.error);
     }
     if (evt.textDelta) fullText += evt.textDelta;
-    if (evt.reasoningDelta) fullReasoning += evt.reasoningDelta;
+    if (evt.reasoningDelta) {
+      fullReasoning += evt.reasoningDelta;
+      hadReasoning = true;
+    }
     if (evt.usage) {
       inputTokens = evt.usage.input_tokens;
       outputTokens = evt.usage.output_tokens;
       cachedTokens = evt.usage.cached_tokens;
+    }
+    if (evt.typed.type === "response.completed" || evt.typed.type === "response.failed") {
+      sawTerminalEvent = true;
     }
     if (evt.functionCallDone) {
       functionCallIds.add(evt.functionCallDone.callId);
@@ -346,6 +373,9 @@ export async function collectCodexToAnthropicResponse(
 
   // Detect empty response (HTTP 200 but no content)
   if (!fullText && toolUseBlocks.length === 0 && outputTokens === 0) {
+    if (!sawTerminalEvent) {
+      throw new UpstreamPrematureCloseError(responseId, hadReasoning, eventCount);
+    }
     throw new EmptyResponseError(responseId, { input_tokens: inputTokens, output_tokens: outputTokens });
   }
 

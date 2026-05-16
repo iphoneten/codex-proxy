@@ -84,6 +84,17 @@ export function prematureCloseAfterReasoningStream(): ExtractedEvent[] {
   ];
 }
 
+/** Upstream cut the SSE stream after producing partial text but before any
+ *  terminal event. This used to be mis-translated as a successful stream end. */
+export function prematureCloseAfterTextStream(): ExtractedEvent[] {
+  return [
+    createCreated("resp_pc_text"),
+    createInProgress("resp_pc_text"),
+    createTextDelta("partial answer"),
+    // No response.completed, no response.failed, no error — stream just ends.
+  ];
+}
+
 /** Stream with multiple tool calls. */
 export function multiToolCallStream(): ExtractedEvent[] {
   return [

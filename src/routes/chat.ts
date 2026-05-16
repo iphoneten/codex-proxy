@@ -25,6 +25,15 @@ import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.j
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 
+function resolveDirectCandidatesSafe(upstreamRouter: UpstreamRouter | undefined, model: string) {
+  const maybe = upstreamRouter as UpstreamRouter & {
+    resolveDirectCandidates?: (requestedModel: string) => Array<{ adapter: unknown; entry?: unknown }>;
+  };
+  return typeof maybe?.resolveDirectCandidates === "function"
+    ? maybe.resolveDirectCandidates(model)
+    : undefined;
+}
+
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
     tag: "Chat",
@@ -54,6 +63,17 @@ function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
         code: "codex_api_error",
       },
     }),
+    formatStreamError: (status, msg) => {
+      const payload = {
+        error: {
+          message: msg,
+          type: status === 429 ? "rate_limit_error" : "server_error",
+          param: null,
+          code: status === 429 ? "rate_limit_exceeded" : "stream_disconnected",
+        },
+      };
+      return `data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`;
+    },
     streamTranslator: ({ api, response, model, onUsage, onResponseId, onResponseCompleted, tupleSchema }) =>
       streamCodexToOpenAI(api, response, model, onUsage, onResponseId, wantReasoning, tupleSchema, onResponseCompleted),
     collectTranslator: ({ api, response, model, tupleSchema }) =>
@@ -151,7 +171,14 @@ export function createChatRoutes(
         model: directModel,
         codexRequest: { ...codexRequest, model: directModel },
       };
-      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
+      return handleDirectRequest({
+        c,
+        upstream: routeMatch.adapter,
+        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, req.model),
+        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        req: directReq,
+        fmt,
+      });
     }
 
     // Auth check for Codex route only

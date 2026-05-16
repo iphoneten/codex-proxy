@@ -1,13 +1,15 @@
 /**
- * API Key Manager — Dashboard component for managing third-party API keys.
+ * Proxy Manager — Dashboard component for managing third-party upstream relays.
  * Supports add/delete/toggle/import/export with predefined model catalogs.
  */
 
 import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import type { ApiKeyProvider, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
+import { useUsageSummary, type UsageSummary } from "../../../shared/hooks/use-usage-stats";
+import { formatNumber } from "./UsageChart";
 
-const CUSTOM_MODELS_HINT = "请先输入key和url，将会获取模型列表";
+const CUSTOM_MODELS_HINT = "请先输入上游密钥和地址，将会获取模型列表";
 const CUSTOM_MODELS_FALLBACK_HINT = "模型列表获取失败，请手动输入模型名";
 
 const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
@@ -45,16 +47,103 @@ function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<stri
   );
 }
 
+interface GroupedApiKeyEntry extends ApiKeyEntry {
+  sourceIds: string[];
+}
+
+function groupEntries(entries: ApiKeyEntry[]): GroupedApiKeyEntry[] {
+  const grouped = new Map<string, GroupedApiKeyEntry>();
+  for (const entry of entries) {
+    const key = [
+      entry.provider,
+      entry.apiKeyMasked ?? entry.apiKey,
+      entry.baseUrl,
+      entry.label ?? "",
+      entry.priority,
+      entry.maxRetries,
+      entry.status,
+    ].join("::");
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...entry, models: [...entry.models], sourceIds: [entry.id] });
+      continue;
+    }
+    existing.models = [...new Set([...existing.models, ...entry.models])];
+    if (!existing.model) existing.model = existing.models[0];
+    existing.sourceIds.push(entry.id);
+  }
+  return [...grouped.values()];
+}
+
+interface UpstreamUsageEntry {
+  key: string;
+  provider: string;
+  label: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  image_input_tokens: number;
+  image_output_tokens: number;
+  request_count: number;
+  updated_at: string;
+}
+
+interface AggregatedUpstreamUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  image_input_tokens: number;
+  image_output_tokens: number;
+  request_count: number;
+  updated_at: string | null;
+}
+
+function aggregateUsageForEntry(
+  entry: GroupedApiKeyEntry,
+  breakdown: UsageSummary["upstream_breakdown"] | undefined,
+): AggregatedUpstreamUsage | null {
+  if (!breakdown?.length) return null;
+  const targetKeys = new Set(entry.sourceIds.map((id) => `api-key:${id}`));
+  const matches = breakdown.filter((item) => targetKeys.has(item.key));
+  if (matches.length === 0) return null;
+  return matches.reduce<AggregatedUpstreamUsage>((acc, item) => ({
+    input_tokens: acc.input_tokens + item.input_tokens,
+    output_tokens: acc.output_tokens + item.output_tokens,
+    cached_tokens: acc.cached_tokens + item.cached_tokens,
+    image_input_tokens: acc.image_input_tokens + item.image_input_tokens,
+    image_output_tokens: acc.image_output_tokens + item.image_output_tokens,
+    request_count: acc.request_count + item.request_count,
+    updated_at: acc.updated_at && acc.updated_at > item.updated_at ? acc.updated_at : item.updated_at,
+  }), {
+    input_tokens: 0,
+    output_tokens: 0,
+    cached_tokens: 0,
+    image_input_tokens: 0,
+    image_output_tokens: 0,
+    request_count: 0,
+    updated_at: null,
+  });
+}
+
+function formatUsageUpdatedAt(value: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
-  onAdd: (input: { provider: ApiKeyProvider; models: string[]; apiKey: string; baseUrl?: string; label?: string }) => Promise<{ ok: boolean; error?: string }>;
+  onAdd: (input: { provider: ApiKeyProvider; models: string[]; apiKey: string; baseUrl?: string; label?: string; priority?: number; maxRetries?: number }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
   fetchCustomModels: (input: { provider: "custom"; apiKey: string; baseUrl: string }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
-  const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
+  const [provider, setProvider] = useState<ApiKeyProvider>("custom");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [label, setLabel] = useState("");
+  const [priority, setPriority] = useState("0");
+  const [maxRetries, setMaxRetries] = useState("2");
   const [manualModelsInput, setManualModelsInput] = useState("");
   const [customModels, setCustomModels] = useState<CatalogModel[]>([]);
   const [customModelStatus, setCustomModelStatus] = useState<CustomModelStatus>("idle");
@@ -134,7 +223,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     const normalizedApiKey = apiKey.trim();
     const normalizedBaseUrl = baseUrl.trim();
     const normalizedManualModels = normalizeCustomModelInput(manualModelsInput);
-    const models = isCustom && customModelStatus === "fallback"
+  const models = isCustom && customModelStatus === "fallback"
       ? normalizedManualModels
       : selectedModels;
 
@@ -156,6 +245,8 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
       apiKey: normalizedApiKey,
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
+      priority: Number.parseInt(priority, 10) || 0,
+      maxRetries: Math.max(0, Number.parseInt(maxRetries, 10) || 0),
     });
     setAdding(false);
     if (result.ok) {
@@ -163,6 +254,8 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
       setApiKey("");
       setBaseUrl("");
       setLabel("");
+      setPriority("0");
+      setMaxRetries("2");
       setManualModelsInput("");
       resetCustomModels();
     } else {
@@ -174,7 +267,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     <form onSubmit={handleSubmit} class="flex flex-col gap-3 p-4 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl">
       <div class="flex flex-wrap gap-3">
         <div class="flex flex-col gap-1 min-w-[140px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Provider</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游类型</label>
           <select
             value={provider}
             onChange={(e) => {
@@ -197,7 +290,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
         </div>
 
         <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">API Key</label>
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
           <input
             type="password"
             value={apiKey}
@@ -215,7 +308,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Models</label>
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">可用模型</label>
         {!isCustom && renderModelChecklist(providerCatalog, selectedModelSet, handleModelToggle)}
         {isCustom && customModelStatus === "loaded" && renderModelChecklist(customModels, selectedModelSet, handleModelToggle)}
         {isCustom && customModelStatus !== "loaded" && (
@@ -238,7 +331,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
 
       {isCustom && (
         <div class="flex flex-col gap-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Base URL</label>
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
           <input
             type="url"
             value={baseUrl}
@@ -256,12 +349,32 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
 
       <div class="flex gap-3 items-end">
         <div class="flex flex-col gap-1 flex-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Label (optional)</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游名称</label>
           <input
             type="text"
             value={label}
             onInput={(e) => setLabel((e.target as HTMLInputElement).value)}
-            placeholder="e.g. Production, Team A"
+            placeholder="例如：主线路、备用线路、Team A"
+            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        </div>
+        <div class="flex flex-col gap-1 w-24">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">优先级</label>
+          <input
+            type="number"
+            value={priority}
+            onInput={(e) => setPriority((e.target as HTMLInputElement).value)}
+            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        </div>
+        <div class="flex flex-col gap-1 w-24">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">重试次数</label>
+          <input
+            type="number"
+            min="0"
+            max="10"
+            value={maxRetries}
+            onInput={(e) => setMaxRetries((e.target as HTMLInputElement).value)}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
         </div>
@@ -270,7 +383,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
           disabled={adding}
           class="px-4 py-1.5 text-sm font-medium text-white bg-primary-action hover:bg-primary-action-hover rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap"
         >
-          {adding ? "Adding..." : "Add Key"}
+          {adding ? "添加中..." : "添加上游"}
         </button>
       </div>
 
@@ -291,60 +404,363 @@ function providerBadgeColor(provider: ApiKeyProvider): string {
   }
 }
 
-function KeyRow({ entry, onDelete, onToggle }: {
-  entry: ApiKeyEntry;
+function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
+  entry: GroupedApiKeyEntry;
+  usage: AggregatedUpstreamUsage | null;
+  usageLoading: boolean;
   onDelete: (id: string) => void;
   onToggle: (id: string, status: "active" | "disabled") => void;
+  onUpdateRouting: (id: string, routing: { priority?: number; maxRetries?: number }) => void;
+  onUpdateBaseUrl: (id: string, baseUrl: string) => void;
+  onRevealApiKey: (id: string) => Promise<{ ok: true; apiKey: string } | { ok: false; error: string }>;
+  onRefreshModels: (id: string) => Promise<{ ok: true; models: string[] } | { ok: false; error: string }>;
+  onAddModels: (id: string, models: string[]) => Promise<{ ok: boolean; error?: string }>;
+  onRemoveModels: (id: string, models: string[]) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const isActive = entry.status === "active";
+  const [expanded, setExpanded] = useState(false);
+  const [priority, setPriority] = useState(String(entry.priority));
+  const [maxRetries, setMaxRetries] = useState(String(entry.maxRetries));
+  const [baseUrl, setBaseUrl] = useState(entry.baseUrl);
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [revealingApiKey, setRevealingApiKey] = useState(false);
+  const [modelInput, setModelInput] = useState("");
+  const [modelsBusy, setModelsBusy] = useState(false);
+  const [modelMessage, setModelMessage] = useState<string | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedAvailableModels, setSelectedAvailableModels] = useState<string[]>([]);
+  const [usageExpanded, setUsageExpanded] = useState(false);
+  const displayName = entry.label?.trim() || entry.provider;
+  const mainModels = entry.models.length > 0 ? entry.models : entry.model ? [entry.model] : [];
+  const apiKeyValue = showApiKey ? apiKey : (entry.apiKeyMasked || "******");
+
+  const handleToggleApiKeyVisibility = async () => {
+    if (showApiKey) {
+      setShowApiKey(false);
+      setApiKey("");
+      return;
+    }
+
+    setRevealingApiKey(true);
+    const result = await onRevealApiKey(entry.id);
+    setRevealingApiKey(false);
+    if (!result.ok) return;
+    setApiKey(result.apiKey);
+    setShowApiKey(true);
+  };
+
+  const handleRefreshModels = async () => {
+    setModelsBusy(true);
+    setModelMessage(null);
+    const result = await onRefreshModels(entry.id);
+    setModelsBusy(false);
+    if (!result.ok) {
+      setModelMessage(result.error || "加载模型失败");
+      return;
+    }
+    setAvailableModels(result.models);
+    setSelectedAvailableModels(result.models.filter((model) => !mainModels.includes(model)));
+    setModelMessage(`已加载上游模型，共 ${result.models.length} 个`);
+  };
+
+  const handleAddModels = async () => {
+    const manualModels = normalizeCustomModelInput(modelInput);
+    const models = [...new Set([...selectedAvailableModels, ...manualModels])].filter((model) => !mainModels.includes(model));
+    if (models.length === 0) {
+      setModelMessage("请选择或输入至少一个新模型");
+      return;
+    }
+    setModelsBusy(true);
+    setModelMessage(null);
+    const result = await onAddModels(entry.id, models);
+    setModelsBusy(false);
+    if (result.ok) {
+      setModelInput("");
+      setSelectedAvailableModels([]);
+      setModelMessage("模型已添加");
+      return;
+    }
+    setModelMessage(result.error || "新增模型失败");
+  };
+
+  const handleRemoveModel = async (model: string) => {
+    if (mainModels.length <= 1) {
+      setModelMessage("至少保留一个模型");
+      return;
+    }
+    setModelsBusy(true);
+    setModelMessage(null);
+    const result = await onRemoveModels(entry.id, [model]);
+    setModelsBusy(false);
+    if (result.ok) {
+      setModelMessage("模型已删除");
+      return;
+    }
+    setModelMessage(result.error || "删除模型失败");
+  };
+
+  const toggleAvailableModel = (model: string) => {
+    if (mainModels.includes(model)) return;
+    setSelectedAvailableModels((prev) => prev.includes(model)
+      ? prev.filter((item) => item !== model)
+      : [...prev, model]);
+  };
 
   return (
-    <div class={`flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""}`}>
-      <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${providerBadgeColor(entry.provider)}`}>
-        {entry.provider}
-      </span>
-
-      <span class="text-sm font-mono text-slate-800 dark:text-text-main">
-        {entry.model}
-      </span>
-
-      {entry.label && (
-        <span class="text-xs text-slate-500 dark:text-text-dim">
-          {entry.label}
+    <div class={`flex flex-col gap-3 px-4 py-3 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""}`}>
+      <div class="flex items-center gap-2">
+        <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${providerBadgeColor(entry.provider)}`}>
+          {entry.provider}
         </span>
+        <span class="text-sm font-medium text-slate-700 dark:text-text-main">
+          {displayName}
+        </span>
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setExpanded((value) => !value)}
+            title={expanded ? "收起模型" : "查看模型"}
+            class="px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30 transition-colors"
+          >
+            {expanded ? `收起模型 (${mainModels.length})` : `查看模型 (${mainModels.length})`}
+          </button>
+          <button
+            onClick={() => setUsageExpanded((value) => !value)}
+            title={usageExpanded ? "收起用量" : "查看用量"}
+            class="px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30 transition-colors"
+          >
+            {usageExpanded ? "收起用量" : "查看用量"}
+          </button>
+          <button
+            onClick={() => onToggle(entry.id, isActive ? "disabled" : "active")}
+            title={isActive ? "禁用上游" : "启用上游"}
+            class={`relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 ${
+              isActive ? "bg-primary" : "bg-slate-300 dark:bg-slate-600"
+            }`}
+          >
+            <span class={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${
+              isActive ? "translate-x-[16px]" : "translate-x-0.5"
+            }`} />
+          </button>
+
+          <button
+            onClick={() => onDelete(entry.id)}
+            title="删除上游"
+            class="p-1 text-slate-400 hover:text-red-500 transition-colors"
+          >
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.108 0 0 0-7.5 0" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-[11rem_minmax(0,1.6fr)_minmax(0,1fr)_96px_96px]">
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游名称</label>
+          <input
+            type="text"
+            value={displayName}
+            readOnly
+            class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-100 dark:bg-bg-dark text-slate-700 dark:text-text-main cursor-default"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
+          <input
+            type="url"
+            value={baseUrl}
+            onInput={(e) => setBaseUrl((e.target as HTMLInputElement).value)}
+            onBlur={() => onUpdateBaseUrl(entry.id, baseUrl)}
+            class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
+          <div class="flex items-center gap-2">
+            <input
+              type="text"
+              value={apiKeyValue}
+              readOnly
+              class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-100 dark:bg-bg-dark text-slate-700 dark:text-text-main font-mono cursor-default"
+            />
+            <button
+              type="button"
+              onClick={() => void handleToggleApiKeyVisibility()}
+              disabled={revealingApiKey}
+              title={showApiKey ? "隐藏密钥" : "显示密钥"}
+              class="inline-flex items-center justify-center p-2 rounded-lg border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30 transition-colors disabled:opacity-40"
+            >
+              {showApiKey ? (
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.955-.138 2.867-.395m3.087-1.578A10.45 10.45 0 0 0 22.066 12C20.774 7.662 16.756 4.5 12 4.5c-1.113 0-2.183.173-3.188.495M6.228 6.228 3 3m3.228 3.228 3.65 3.65m0 0a3 3 0 1 0 4.243 4.243m-4.243-4.243L14.12 14.12m0 0 3.652 3.652M14.12 14.12 9.88 9.88" />
+                </svg>
+              ) : (
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.644C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.21.07.437 0 .644C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178Z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">优先级</label>
+          <input
+            type="number"
+            value={priority}
+            onInput={(e) => setPriority((e.target as HTMLInputElement).value)}
+            onBlur={() => onUpdateRouting(entry.id, { priority: Number.parseInt(priority, 10) || 0 })}
+            class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">重试次数</label>
+          <input
+            type="number"
+            min="0"
+            max="10"
+            value={maxRetries}
+            onInput={(e) => setMaxRetries((e.target as HTMLInputElement).value)}
+            onBlur={() => onUpdateRouting(entry.id, { maxRetries: Math.max(0, Number.parseInt(maxRetries, 10) || 0) })}
+            class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        </div>
+      </div>
+
+      {usageExpanded && (
+        <div class="flex flex-col gap-3 rounded-xl border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark px-4 py-3">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-sm font-medium text-slate-700 dark:text-text-main">上游用量</div>
+              <div class="text-xs text-slate-400 dark:text-text-dim">
+                最近更新时间：{usageLoading ? "Loading..." : formatUsageUpdatedAt(usage?.updated_at ?? null)}
+              </div>
+            </div>
+          </div>
+
+          {usageLoading ? (
+            <div class="text-sm text-slate-400 dark:text-text-dim">Loading...</div>
+          ) : usage ? (
+            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <UsageMetricCard label="输入 Tokens" value={formatNumber(usage.input_tokens)} />
+              <UsageMetricCard label="输出 Tokens" value={formatNumber(usage.output_tokens)} />
+              <UsageMetricCard label="缓存 Tokens" value={formatNumber(usage.cached_tokens)} />
+              <UsageMetricCard
+                label="图片 Tokens"
+                value={`${formatNumber(usage.image_input_tokens)} / ${formatNumber(usage.image_output_tokens)}`}
+              />
+              <UsageMetricCard label="请求数" value={formatNumber(usage.request_count)} />
+              <UsageMetricCard
+                label="命中率"
+                value={usage.input_tokens > 0 ? `${Math.round((usage.cached_tokens / usage.input_tokens) * 1000) / 10}%` : "0%"}
+              />
+            </div>
+          ) : (
+            <div class="text-sm text-slate-400 dark:text-text-dim">这个上游暂时还没有用量记录。</div>
+          )}
+        </div>
       )}
 
-      <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto hidden sm:inline">
-        {entry.apiKey}
-      </span>
+      {expanded && (
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center gap-2">
+            <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">模型列表</label>
+            <button
+              type="button"
+              onClick={() => void handleRefreshModels()}
+              disabled={modelsBusy}
+              class="px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30 transition-colors disabled:opacity-40"
+            >
+              加载模型
+            </button>
+          </div>
+          <div class="flex flex-wrap gap-2 rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark px-3 py-2">
+            {mainModels.map((model) => (
+              <span
+                key={model}
+                class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark text-slate-700 dark:text-text-main font-mono"
+              >
+                <span>{model}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveModel(model)}
+                  disabled={modelsBusy}
+                  title="删除模型"
+                  class="inline-flex items-center justify-center text-slate-400 hover:text-red-500 disabled:opacity-40"
+                >
+                  <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            ))}
+          </div>
+          {availableModels.length > 0 && (
+            <div class="flex flex-col gap-1">
+              <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游模型候选</label>
+              <div class="max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark p-2 flex flex-col gap-1">
+                {availableModels.map((model) => {
+                  const alreadyAdded = mainModels.includes(model);
+                  return (
+                    <label key={model} class={`flex items-center gap-2 px-2 py-1 rounded text-sm ${alreadyAdded ? "text-slate-400 dark:text-slate-500" : "text-slate-800 dark:text-text-main hover:bg-white/70 dark:hover:bg-card-dark/70"}`}>
+                      <input
+                        type="checkbox"
+                        checked={alreadyAdded || selectedAvailableModels.includes(model)}
+                        disabled={alreadyAdded}
+                        onChange={() => toggleAvailableModel(model)}
+                      />
+                      <span class="font-mono">{model}</span>
+                      {alreadyAdded && <span class="ml-auto text-[10px]">已添加</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div class="flex flex-col gap-2 md:flex-row">
+            <input
+              type="text"
+              value={modelInput}
+              onInput={(e) => setModelInput((e.target as HTMLInputElement).value)}
+              placeholder="新增模型，支持逗号分隔"
+              class="flex-1 px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+            />
+            <button
+              type="button"
+              onClick={() => void handleAddModels()}
+              disabled={modelsBusy}
+              class="px-3 py-1.5 text-sm rounded-lg bg-primary-action text-white hover:bg-primary-action-hover transition-colors disabled:opacity-40"
+            >
+              新增模型
+            </button>
+          </div>
+          {modelMessage && (
+            <div class="text-xs text-slate-500 dark:text-text-dim">{modelMessage}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
-      <button
-        onClick={() => onToggle(entry.id, isActive ? "disabled" : "active")}
-        title={isActive ? "Disable" : "Enable"}
-        class={`relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 ${
-          isActive ? "bg-primary" : "bg-slate-300 dark:bg-slate-600"
-        }`}
-      >
-        <span class={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${
-          isActive ? "translate-x-[16px]" : "translate-x-0.5"
-        }`} />
-      </button>
-
-      <button
-        onClick={() => onDelete(entry.id)}
-        title="Delete"
-        class="p-1 text-slate-400 hover:text-red-500 transition-colors"
-      >
-        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-        </svg>
-      </button>
+function UsageMetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div class="rounded-lg border border-gray-200 dark:border-border-dark bg-white dark:bg-card-dark px-3 py-3">
+      <div class="text-[11px] text-slate-500 dark:text-text-dim mb-1">{label}</div>
+      <div class="text-base font-semibold text-slate-800 dark:text-text-main">{value}</div>
     </div>
   );
 }
 
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, importKeys, fetchCustomModels } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, fetchCustomModels } = useApiKeys();
+  const { summary, loading: usageLoading } = useUsageSummary();
+  const groupedKeys = useMemo(() => groupEntries(keys), [keys]);
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -354,16 +770,16 @@ export function ApiKeyManager() {
     if (!files || files.length === 0) return;
     try {
       const result = await importKeys(files[0]);
-      setImportResult(`Added: ${result.added}, Failed: ${result.failed}`);
+      setImportResult(`导入成功 ${result.added} 条，失败 ${result.failed} 条`);
       setTimeout(() => setImportResult(null), 5000);
     } catch {
-      setImportResult("Import failed");
+      setImportResult("导入失败");
     }
     if (fileRef.current) fileRef.current.value = "";
   }, [importKeys]);
 
   if (loading) {
-    return <div class="text-sm text-slate-400 dark:text-text-dim animate-pulse">Loading API keys...</div>;
+    return <div class="text-sm text-slate-400 dark:text-text-dim animate-pulse">正在加载中转上游服务商...</div>;
   }
 
   return (
@@ -373,9 +789,9 @@ export function ApiKeyManager() {
           <svg class="size-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
           </svg>
-          API Keys
+          中转上游服务商管理
           <span class="text-xs font-normal text-slate-400 dark:text-text-dim">
-            ({keys.length})
+            ({groupedKeys.length})
           </span>
         </h2>
 
@@ -387,7 +803,7 @@ export function ApiKeyManager() {
           <input ref={fileRef} type="file" accept=".json" onChange={handleImport} class="hidden" />
           <button
             onClick={() => fileRef.current?.click()}
-            title="Import"
+            title="导入上游"
             class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -396,7 +812,7 @@ export function ApiKeyManager() {
           </button>
           <button
             onClick={() => setShowForm(!showForm)}
-            title="Add API Key"
+            title="添加上游"
             class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -418,20 +834,28 @@ export function ApiKeyManager() {
         />
       )}
 
-      {keys.length === 0 ? (
+      {groupedKeys.length === 0 ? (
         <div class="text-center py-8 text-sm text-slate-400 dark:text-text-dim">
-          No API keys configured. Click + to add one.
+          还没有配置中转上游服务商，点击右上角加号添加。
         </div>
       ) : (
         <div class="flex flex-col gap-2">
-          {keys.map((entry) => (
-            <KeyRow
-              key={entry.id}
-              entry={entry}
-              onDelete={deleteKey}
-              onToggle={toggleStatus}
-            />
-          ))}
+          {groupedKeys.map((entry) => (
+              <KeyRow
+                key={entry.id}
+                entry={entry}
+                usage={aggregateUsageForEntry(entry, summary?.upstream_breakdown)}
+                usageLoading={usageLoading}
+                onDelete={deleteKey}
+                onToggle={toggleStatus}
+                onUpdateBaseUrl={updateBaseUrl}
+                onRevealApiKey={revealApiKey}
+                onRefreshModels={refreshEntryModels}
+                onAddModels={addEntryModels}
+                onRemoveModels={removeEntryModels}
+                onUpdateRouting={updateRouting}
+              />
+            ))}
         </div>
       )}
     </div>

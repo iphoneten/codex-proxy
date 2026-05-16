@@ -59,6 +59,10 @@ export async function* streamCodexToOpenAI(
   let nextToolCallIndex = 0;
   // Track which call_ids have received argument deltas
   const callIdsWithDeltas = new Set<string>();
+  let sawTerminalEvent = false;
+  let responseId: string | null = null;
+  let eventCount = 0;
+  let hadReasoning = false;
 
   // Send initial role chunk
   yield formatSSE({
@@ -76,7 +80,9 @@ export async function* streamCodexToOpenAI(
   });
 
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    eventCount++;
     if (evt.responseId) onResponseId?.(evt.responseId);
+    if (evt.responseId) responseId = evt.responseId;
 
     // Handle upstream error events
     if (evt.error) {
@@ -169,6 +175,7 @@ export async function* streamCodexToOpenAI(
     // Emit reasoning delta if client requested it
     if (evt.reasoningDelta && wantReasoning) {
       hasContent = true;
+      hadReasoning = true;
       yield formatSSE({
         id: chunkId,
         object: "chat.completion.chunk",
@@ -211,6 +218,7 @@ export async function* streamCodexToOpenAI(
       }
 
       case "response.completed": {
+        sawTerminalEvent = true;
         // Flush buffered tuple text as reconverted JSON
         if (tupleTextBuffer !== null && tupleSchema && tupleTextBuffer) {
           try {
@@ -296,6 +304,10 @@ export async function* streamCodexToOpenAI(
         break;
       }
     }
+  }
+
+  if (!sawTerminalEvent) {
+    throw new UpstreamPrematureCloseError(responseId, hadReasoning, eventCount);
   }
 
   // Send [DONE] marker

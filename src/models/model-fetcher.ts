@@ -24,11 +24,13 @@ export class ModelFetcher {
   private pool: AccountPool;
   private cookieJar: CookieJar;
   private proxyPool: ProxyPool | null;
+  private requireAccounts: boolean;
 
-  constructor(pool: AccountPool, cookieJar: CookieJar, proxyPool: ProxyPool | null) {
+  constructor(pool: AccountPool, cookieJar: CookieJar, proxyPool: ProxyPool | null, requireAccounts = true) {
     this.pool = pool;
     this.cookieJar = cookieJar;
     this.proxyPool = proxyPool;
+    this.requireAccounts = requireAccounts;
   }
 
   start(): void {
@@ -65,6 +67,7 @@ export class ModelFetcher {
   }
 
   private async fetchModelsFromBackend(): Promise<boolean> {
+    if (!this.requireAccounts) return true;
     if (!this.pool.isAuthenticated()) return false;
 
     const planAccounts = this.pool.getDistinctPlanAccounts();
@@ -149,9 +152,10 @@ export function startModelRefresh(
   accountPool: AccountPool,
   cookieJar: CookieJar,
   proxyPool?: ProxyPool,
+  requireAccounts = true,
 ): void {
   _instance?.stop();
-  _instance = new ModelFetcher(accountPool, cookieJar, proxyPool ?? null);
+  _instance = new ModelFetcher(accountPool, cookieJar, proxyPool ?? null, requireAccounts);
   _instance.start();
 }
 
