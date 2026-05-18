@@ -1,11 +1,30 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { LogStore } from "./store.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { resolve } from "path";
+import { setPaths } from "../paths.js";
+import { LogStore, queryRequestLog, readRequestLog } from "./store.js";
 
 describe("LogStore", () => {
   let store: LogStore;
+  let tmpDataDir: string;
 
   beforeEach(() => {
+    tmpDataDir = mkdtempSync(resolve(tmpdir(), "codex-request-log-test-"));
+    setPaths({
+      rootDir: process.cwd(),
+      configDir: resolve(process.cwd(), "config"),
+      dataDir: tmpDataDir,
+      binDir: resolve(process.cwd(), "bin"),
+      publicDir: resolve(process.cwd(), "public"),
+    });
+    process.env.VITEST_FORCE_APPEND_REQUEST_LOG = "1";
     store = new LogStore(10);
+  });
+
+  afterEach(() => {
+    delete process.env.VITEST_FORCE_APPEND_REQUEST_LOG;
+    rmSync(tmpDataDir, { recursive: true, force: true });
   });
 
   it("returns newest records first when listing", async () => {
@@ -131,6 +150,7 @@ describe("LogStore", () => {
       inputTokens: 1200,
       outputTokens: 300,
       cachedTokens: 700,
+      reasoningTokens: 80,
     });
 
     const result = store.list({ direction: "egress", limit: 10, offset: 0 });
@@ -138,7 +158,70 @@ describe("LogStore", () => {
       inputTokens: 1200,
       outputTokens: 300,
       cachedTokens: 700,
+      reasoningTokens: 80,
     });
+  });
+
+  it("updates persisted request logs when token metadata is patched", async () => {
+    store.enqueue({
+      id: "1",
+      requestId: "r1",
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+      provider: "codex",
+    });
+
+    await Promise.resolve();
+    store.patchLatestByRequestId("r1", "egress", {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedTokens: 700,
+      reasoningTokens: 80,
+    });
+
+    expect(readRequestLog(10)[0]).toMatchObject({
+      requestId: "r1",
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedTokens: 700,
+      reasoningTokens: 80,
+    });
+  });
+
+  it("persists egress logs to request-log.jsonl", async () => {
+    store.enqueue({
+      id: "1",
+      requestId: "r1",
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+      provider: "codex",
+      request: { headers: { authorization: "Bearer secret" } },
+    });
+    store.enqueue({
+      id: "2",
+      requestId: "r2",
+      direction: "ingress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+    });
+
+    await Promise.resolve();
+
+    const file = resolve(tmpDataDir, "request-log.jsonl");
+    expect(existsSync(file)).toBe(true);
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const persisted = JSON.parse(lines[0]);
+    expect(persisted).toMatchObject({ requestId: "r1", direction: "egress", provider: "codex" });
+    expect(persisted.request.headers.authorization).toBe("Bea***et");
+    expect(readRequestLog(10).map((record) => record.requestId)).toEqual(["r1"]);
+    expect(queryRequestLog({ direction: "egress", search: "secret", limit: 10 }).records.map((record) => record.requestId)).toEqual([]);
+    expect(queryRequestLog({ direction: "egress", search: "codex", limit: 10 }).records.map((record) => record.requestId)).toEqual(["r1"]);
   });
 
   it("trims existing records when capacity is lowered", async () => {

@@ -442,9 +442,6 @@ function normalizeModels(...values: Array<string[] | string | undefined>): strin
 function sortApiKeyEntries(entries: ApiKeyEntry[]): ApiKeyEntry[] {
   return [...entries].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
-    const aLast = a.lastUsedAt ?? "";
-    const bLast = b.lastUsedAt ?? "";
-    if (aLast !== bLast) return aLast.localeCompare(bLast);
     return a.addedAt.localeCompare(b.addedAt);
   });
 }

@@ -354,14 +354,18 @@ function normalizePassthroughEventData(
 
 /** Extract usage from a response.completed payload, including cached_tokens
  *  (nested in input_tokens_details per the OpenAI Responses API contract). */
-export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number } {
-  const result: { input_tokens: number; output_tokens: number; cached_tokens?: number } = {
+export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number } {
+  const result: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number } = {
     input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
     output_tokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
   };
   const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : null;
   if (inputDetails && typeof inputDetails.cached_tokens === "number") {
     result.cached_tokens = inputDetails.cached_tokens;
+  }
+  const outputDetails = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : null;
+  if (outputDetails && typeof outputDetails.reasoning_tokens === "number") {
+    result.reasoning_tokens = outputDetails.reasoning_tokens;
   }
   return result;
 }
@@ -382,7 +386,7 @@ export async function* streamPassthrough(
   api: UpstreamAdapter,
   response: Response,
   model: string,
-  onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
+  onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
   onResponseId: (id: string) => void,
   tupleSchema?: Record<string, unknown> | null,
   streamContext?: StreamTranslatorContext,
@@ -654,11 +658,11 @@ export async function collectPassthrough(
   tupleSchema?: Record<string, unknown> | null,
 ): Promise<{
   response: unknown;
-  usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
+  usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
   responseId: string | null;
 }> {
   let finalResponse: unknown = null;
-  let usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number } = { input_tokens: 0, output_tokens: 0 };
+  let usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number } = { input_tokens: 0, output_tokens: 0 };
   let responseId: string | null = null;
   const outputItems: unknown[] = [];
   let textDeltas = "";
@@ -788,6 +792,39 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
     streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema, streamContext, onResponseCompleted),
   collectTranslator: ({ api, response, model, tupleSchema }) =>
     collectPassthrough(api, response, model, tupleSchema),
+};
+
+function compactResponseHasOutput(response: unknown): response is { output: unknown[] } {
+  return isRecord(response) && Array.isArray(response.output);
+}
+
+function compactOutputFromResponsesPayload(response: unknown): unknown[] | null {
+  if (!isRecord(response)) return null;
+  const output = Array.isArray(response.output) ? response.output : [];
+  if (output.length > 0) return output;
+  const outputText = typeof response.output_text === "string" ? response.output_text : "";
+  if (!outputText) return null;
+  return [{
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text: outputText, annotations: [] }],
+  }];
+}
+
+function formatCompactResponse(response: unknown): { output: unknown[] } {
+  if (compactResponseHasOutput(response)) return { output: response.output };
+  const converted = compactOutputFromResponsesPayload(response);
+  if (converted) return { output: converted };
+  return { output: [] };
+}
+
+const COMPACT_DIRECT_FORMAT: FormatAdapter = {
+  ...PASSTHROUGH_FORMAT,
+  collectTranslator: async (options) => {
+    const result = await PASSTHROUGH_FORMAT.collectTranslator(options);
+    return { ...result, response: formatCompactResponse(result.response) };
+  },
 };
 
 // ── Shared auth check ─────────────────────────────────────────────
@@ -963,7 +1000,7 @@ async function handleCompact(
         upstreamCandidates: compactDirectCandidates,
         upstreamEntry: compactRouteMatch?.kind === "api-key" ? compactRouteMatch.entry : undefined,
         req: directReq,
-        fmt: PASSTHROUGH_FORMAT,
+        fmt: COMPACT_DIRECT_FORMAT,
       });
     }
 
@@ -996,7 +1033,7 @@ async function handleCompact(
       );
 
       releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
-      return c.json(result);
+      return c.json(formatCompactResponse(result));
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, compactImageFailedUsage, released);

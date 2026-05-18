@@ -15,6 +15,7 @@ export function enqueueLogEntry(entry: {
   inputTokens?: number | null;
   outputTokens?: number | null;
   cachedTokens?: number | null;
+  reasoningTokens?: number | null;
   error?: string | null;
   request?: unknown;
   response?: unknown;
@@ -38,6 +39,7 @@ export function patchLogEntryByRequestId(
     inputTokens?: number | null;
     outputTokens?: number | null;
     cachedTokens?: number | null;
+    reasoningTokens?: number | null;
     error?: string | null;
   },
 ): void {

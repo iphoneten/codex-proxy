@@ -59,9 +59,6 @@ export class UpstreamRouter {
   private sortEntries(entries: ApiKeyEntry[]): ApiKeyEntry[] {
     return [...entries].sort((a, b) => {
       if (b.priority !== a.priority) return b.priority - a.priority;
-      const aLast = a.lastUsedAt ?? "";
-      const bLast = b.lastUsedAt ?? "";
-      if (aLast !== bLast) return aLast.localeCompare(bLast);
       return a.addedAt.localeCompare(b.addedAt);
     });
   }
@@ -215,11 +212,14 @@ export class UpstreamRouter {
 
   resolveDirectCandidates(model: string): DirectUpstreamCandidate[] {
     const apiKeyCandidates = this.resolveExactApiKeyCandidates(model);
-    const fallbackCandidates = this.resolveFallbackApiKeyCandidates(model);
-    if (apiKeyCandidates.length > 0 || fallbackCandidates.length > 0) {
+    const fallbackCandidates = apiKeyCandidates.length > 0 ? [] : this.resolveFallbackApiKeyCandidates(model);
+    const candidatePool = apiKeyCandidates.length > 0 ? apiKeyCandidates : fallbackCandidates;
+    if (candidatePool.length > 0) {
+      const maxPriority = Math.max(...candidatePool.map((candidate) => candidate.entry?.priority ?? 0));
       const seen = new Set<string>();
       const out: DirectUpstreamCandidate[] = [];
-      for (const candidate of [...apiKeyCandidates, ...fallbackCandidates]) {
+      for (const candidate of candidatePool) {
+        if ((candidate.entry?.priority ?? 0) < maxPriority) continue;
         const key = candidate.entry
           ? `${candidate.entry.id}:${candidate.resolvedModel ?? ""}`
           : `${candidate.adapter.tag}:${candidate.resolvedModel ?? ""}`;

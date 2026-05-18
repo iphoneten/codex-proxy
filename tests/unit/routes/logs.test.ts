@@ -12,6 +12,7 @@ const mockYaml = vi.hoisted(() => ({
 
 const store = vi.hoisted(() => ({
   list: vi.fn(),
+  queryRequestLog: vi.fn(),
   get: vi.fn(),
   clear: vi.fn(),
   setState: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("@src/utils/yaml-mutate.js", () => ({
 
 vi.mock("@src/logs/store.js", () => ({
   logStore: store,
+  queryRequestLog: store.queryRequestLog,
 }));
 
 import { createLogRoutes } from "@src/routes/admin/logs.js";
@@ -35,6 +37,7 @@ import { createLogRoutes } from "@src/routes/admin/logs.js";
 describe("log routes", () => {
   beforeEach(() => {
     store.list.mockReset();
+    store.queryRequestLog.mockReset();
     store.get.mockReset();
     store.clear.mockReset();
     store.setState.mockReset();
@@ -45,7 +48,7 @@ describe("log routes", () => {
   });
 
   it("returns paginated logs", async () => {
-    store.list.mockReturnValue({
+    store.queryRequestLog.mockReturnValue({
       total: 2,
       offset: 0,
       limit: 1,
@@ -69,7 +72,8 @@ describe("log routes", () => {
     const res = await app.request("/admin/logs?limit=1&offset=0&direction=egress&search=messages");
     expect(res.status).toBe(200);
 
-    expect(store.list).toHaveBeenCalledWith({ direction: "egress", search: "messages", limit: 1, offset: 0 });
+    expect(store.queryRequestLog).toHaveBeenCalledWith({ direction: "egress", search: "messages", limit: 1, offset: 0 });
+    expect(store.list).not.toHaveBeenCalled();
     const body = await res.json();
     expect(body.total).toBe(2);
     expect(body.records).toHaveLength(1);

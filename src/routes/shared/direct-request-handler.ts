@@ -24,6 +24,10 @@ import { enrichEgressLogUsage } from "./log-usage-enrichment.js";
 import { isCloudflareChallengeResponse } from "../../tls/direct-fallback.js";
 import { getConfig } from "../../config.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function resolveUpstreamName(
   entry: { label?: string | null; baseUrl?: string } | undefined,
   fallback: string,
@@ -216,6 +220,18 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     abortController.abort();
     if (options.fallbackToAccountPool) {
       return options.fallbackToAccountPool(err);
+    }
+    if (err instanceof CodexApiError) {
+      const code = toErrorStatus(err.status) as StatusCode;
+      c.status(code);
+      try {
+        const parsed: unknown = JSON.parse(err.body);
+        if (isRecord(parsed)) return c.json(parsed);
+      } catch { /* non-JSON body: fall through */ }
+      if (code === 429) {
+        return c.json(fmt.format429(err.message));
+      }
+      return c.json(fmt.formatError(code, err.message));
     }
     const msg = err instanceof Error ? err.message : "Failed to collect upstream response";
     const code = toErrorStatus(0) as StatusCode;

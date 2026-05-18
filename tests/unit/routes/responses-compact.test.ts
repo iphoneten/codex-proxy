@@ -157,6 +157,35 @@ describe("POST /v1/responses/compact", () => {
     expect(body).toEqual({ output: [{ role: "user", content: "compacted" }] });
   });
 
+  it("wraps non-compact upstream responses in the compact output envelope", async () => {
+    mockCompactResponse = {
+      id: "resp_123",
+      output_text: "compacted text",
+      usage: { input_tokens: 1, output_tokens: 2 },
+    };
+
+    const res = await app.request("/v1/responses/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex",
+        input: [{ role: "user", content: "Hello" }],
+        instructions: "You are helpful",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      output: [{
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "compacted text", annotations: [] }],
+      }],
+    });
+  });
+
   it("routes compact requests for runtime API-key models to direct upstream", async () => {
     const upstreamRouter = {
       resolveMatch: vi.fn(() => ({ kind: "adapter", adapter: { tag: "custom-upstream" } })),

@@ -91,7 +91,7 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     }
   });
 
-  it("orders api-key candidates by priority descending", () => {
+  it("keeps only the highest priority api-key candidates", () => {
     pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1", priority: 1 });
     pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2", priority: 20 });
 
@@ -102,9 +102,22 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     router.setApiKeyPool(pool, mockFactory);
 
     const candidates = router.resolveDirectCandidates("gpt-5.4");
-    expect(candidates).toHaveLength(2);
+    expect(candidates).toHaveLength(1);
     expect(candidates[0].entry?.apiKey).toBe("k2");
-    expect(candidates[1].entry?.apiKey).toBe("k1");
+  });
+
+  it("keeps equal-priority api-key candidates as failover peers", () => {
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1", priority: 0 });
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2", priority: 0 });
+
+    const adapters = new Map<string, UpstreamAdapter>();
+    adapters.set("codex", mockAdapter("codex"));
+
+    const router = new UpstreamRouter(adapters, {}, "codex");
+    router.setApiKeyPool(pool, mockFactory);
+
+    const candidates = router.resolveDirectCandidates("gpt-5.4");
+    expect(candidates).toHaveLength(2);
   });
 
   it("includes fallback candidates for other models under the same provider family", () => {

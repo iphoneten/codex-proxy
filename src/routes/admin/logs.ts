@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { getLocalConfigPath, reloadAllConfigs } from "../../config.js";
-import { logStore, type LogDirection } from "../../logs/store.js";
+import { logStore, queryRequestLog, type LogDirection } from "../../logs/store.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
 
 const ListLogsQuerySchema = z.object({
@@ -29,12 +29,13 @@ export function createLogRoutes(): Hono {
 
     const direction = parseDirection(c.req.query("direction"));
     const search = c.req.query("search");
-    const data = logStore.list({
+    const query = {
       direction,
       search,
       limit: parsed.data.limit,
       offset: parsed.data.offset,
-    });
+    };
+    const data = direction === "egress" ? queryRequestLog(query) : logStore.list(query);
     return c.json(data);
   });
 

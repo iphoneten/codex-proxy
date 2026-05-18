@@ -1,3 +1,14 @@
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "fs";
+import { resolve } from "path";
+import { getDataDir } from "../paths.js";
 import { redactJson } from "./redact.js";
 
 export type LogDirection = "ingress" | "egress";
@@ -18,6 +29,7 @@ export interface LogRecord {
   inputTokens?: number | null;
   outputTokens?: number | null;
   cachedTokens?: number | null;
+  reasoningTokens?: number | null;
   sizeBytes?: number | null;
   error?: string | null;
   tags?: string[];
@@ -50,6 +62,9 @@ export interface LogQuery {
 const DEFAULT_CAPACITY = 2000;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+const REQUEST_LOG_FILE = "request-log.jsonl";
+const REQUEST_LOG_BACKUP_FILE = "request-log.1.jsonl";
+const REQUEST_LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 function normalizeLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_LIMIT;
@@ -59,6 +74,132 @@ function normalizeLimit(limit: number | undefined): number {
 function normalizeOffset(offset: number | undefined): number {
   if (offset === undefined || !Number.isFinite(offset)) return 0;
   return Math.max(0, Math.trunc(offset));
+}
+
+function ensureDataDir(): string {
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function requestLogPath(): string {
+  return resolve(ensureDataDir(), REQUEST_LOG_FILE);
+}
+
+function requestLogBackupPath(): string {
+  return resolve(ensureDataDir(), REQUEST_LOG_BACKUP_FILE);
+}
+
+function rotateRequestLogIfNeeded(): void {
+  const current = requestLogPath();
+  if (!existsSync(current)) return;
+  if (statSync(current).size <= REQUEST_LOG_MAX_BYTES) return;
+  const backup = requestLogBackupPath();
+  if (existsSync(backup) && process.platform === "win32") {
+    try { renameSync(backup, backup + ".old"); } catch { /* ignore */ }
+  }
+  renameSync(current, backup);
+}
+
+function appendRequestLog(record: LogRecord): void {
+  if (process.env.VITEST && !process.env.VITEST_FORCE_APPEND_REQUEST_LOG) return;
+  if (record.direction !== "egress") return;
+  try {
+    rotateRequestLogIfNeeded();
+    appendFileSync(requestLogPath(), JSON.stringify(record) + "\n", "utf-8");
+  } catch {
+    // Audit log persistence is best-effort; in-memory logs still work.
+  }
+}
+
+function rewriteRequestLogRecord(updated: LogRecord): void {
+  if (process.env.VITEST && !process.env.VITEST_FORCE_APPEND_REQUEST_LOG) return;
+  if (updated.direction !== "egress") return;
+
+  const files = [requestLogPath(), requestLogBackupPath()];
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    try {
+      const lines = readFileSync(file, "utf-8").split("\n");
+      let changed = false;
+      const rewritten = lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return line;
+        try {
+          const record = JSON.parse(trimmed) as LogRecord;
+          if (record.id !== updated.id) return line;
+          changed = true;
+          return JSON.stringify(updated);
+        } catch {
+          return line;
+        }
+      });
+      if (changed) {
+        writeFileSync(file, rewritten.join("\n"), "utf-8");
+        return;
+      }
+    } catch {
+      // Audit log persistence is best-effort; in-memory logs still work.
+    }
+  }
+}
+
+function readJsonlFile(path: string): LogRecord[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf-8");
+  const out: LogRecord[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try { out.push(JSON.parse(trimmed) as LogRecord); } catch { /* skip bad lines */ }
+  }
+  return out;
+}
+
+function searchMatches(record: LogRecord, search: string): boolean {
+  if (!search) return true;
+  const hay = [
+    record.id,
+    record.requestId,
+    record.direction,
+    record.method,
+    record.path,
+    record.model ?? "",
+    record.provider ?? "",
+    record.upstreamName ?? "",
+    record.status ?? "",
+    record.error ?? "",
+    JSON.stringify(record.request ?? ""),
+    JSON.stringify(record.response ?? ""),
+  ].join(" ").toLowerCase();
+  return hay.includes(search);
+}
+
+function applyLogQuery(records: LogRecord[], query: LogQuery): { records: LogRecord[]; total: number; offset: number; limit: number } {
+  const direction = query.direction ?? "all";
+  const search = (query.search ?? "").trim().toLowerCase();
+  let results = records;
+
+  if (direction !== "all") {
+    results = results.filter((r) => r.direction === direction);
+  }
+
+  if (search) {
+    results = results.filter((r) => searchMatches(r, search));
+  }
+
+  const total = results.length;
+  const limit = normalizeLimit(query.limit);
+  const offset = normalizeOffset(query.offset);
+  const newestFirst = [...results].reverse();
+  const sliced = newestFirst.slice(offset, offset + limit);
+
+  return { records: sliced, total, offset, limit };
+}
+
+function readPersistedRequestLogs(query: LogQuery): { records: LogRecord[]; total: number; offset: number; limit: number } {
+  const combined = [...readJsonlFile(requestLogBackupPath()), ...readJsonlFile(requestLogPath())];
+  return applyLogQuery(combined, { ...query, direction: query.direction ?? "egress" });
 }
 
 export class LogStore {
@@ -112,28 +253,7 @@ export class LogStore {
   }
 
   list(query: LogQuery): { records: LogRecord[]; total: number; offset: number; limit: number } {
-    const direction = query.direction ?? "all";
-    const search = (query.search ?? "").trim().toLowerCase();
-    let results = this.records;
-
-    if (direction !== "all") {
-      results = results.filter((r) => r.direction === direction);
-    }
-
-    if (search) {
-      results = results.filter((r) => {
-        const hay = `${r.method} ${r.path} ${r.model ?? ""} ${r.provider ?? ""} ${r.upstreamName ?? ""} ${r.status ?? ""}`.toLowerCase();
-        return hay.includes(search);
-      });
-    }
-
-    const total = results.length;
-    const limit = normalizeLimit(query.limit);
-    const offset = normalizeOffset(query.offset);
-    const newestFirst = [...results].reverse();
-    const sliced = newestFirst.slice(offset, offset + limit);
-
-    return { records: sliced, total, offset, limit };
+    return applyLogQuery(this.records, query);
   }
 
   get(id: string): LogRecord | null {
@@ -144,7 +264,9 @@ export class LogStore {
     for (let index = this.records.length - 1; index >= 0; index--) {
       const record = this.records[index];
       if (record.requestId === requestId && record.direction === direction) {
-        this.records[index] = { ...record, ...patch };
+        const updated = { ...record, ...patch };
+        this.records[index] = updated;
+        rewriteRequestLogRecord(updated);
         return;
       }
     }
@@ -162,6 +284,7 @@ export class LogStore {
         response: record.response !== undefined ? redactJson(record.response) : undefined,
       };
       this.records.push(redacted);
+      appendRequestLog(redacted);
     }
 
     this.trimToCapacity();
@@ -173,6 +296,14 @@ export class LogStore {
     this.records.splice(0, over);
     this.dropped += over;
   }
+}
+
+export function queryRequestLog(query: LogQuery): { records: LogRecord[]; total: number; offset: number; limit: number } {
+  return readPersistedRequestLogs(query);
+}
+
+export function readRequestLog(limit = DEFAULT_LIMIT): LogRecord[] {
+  return queryRequestLog({ limit }).records;
 }
 
 export const logStore = new LogStore();

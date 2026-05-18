@@ -17,5 +17,6 @@ export function enrichEgressLogUsage(options: {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     cachedTokens: usage.cached_tokens ?? null,
+    reasoningTokens: usage.reasoning_tokens ?? null,
   });
 }

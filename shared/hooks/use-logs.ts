@@ -36,6 +36,7 @@ export interface LogRecord {
   inputTokens?: number | null;
   outputTokens?: number | null;
   cachedTokens?: number | null;
+  reasoningTokens?: number | null;
   error?: string | null;
   request?: unknown;
   response?: unknown;

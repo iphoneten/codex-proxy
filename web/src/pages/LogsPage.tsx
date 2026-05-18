@@ -60,7 +60,8 @@ function getComputeTokens(record: LogRecord): number | null {
     typeof record.outputTokens === "number"
   ) {
     const cachedTokens = getCacheTokens(record) ?? 0;
-    return Math.max(0, record.inputTokens - cachedTokens) + record.outputTokens;
+    const reasoningTokens = typeof record.reasoningTokens === "number" ? record.reasoningTokens : 0;
+    return Math.max(0, record.inputTokens - cachedTokens) + record.outputTokens + reasoningTokens;
   }
   return null;
 }
@@ -72,7 +73,8 @@ function formatTokenValue(value: number | null | undefined): string {
 
 function getTokenPair(record: LogRecord): string {
   if (record.direction !== "egress") return "-";
-  return `${formatTokenValue(record.inputTokens)} / ${formatTokenValue(record.outputTokens)}`;
+  const base = `${formatTokenValue(record.inputTokens)} / ${formatTokenValue(record.outputTokens)}`;
+  return typeof record.reasoningTokens === "number" ? `${base} / ${formatTokenValue(record.reasoningTokens)}` : base;
 }
 
 export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
@@ -260,6 +262,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                       <DetailField label="输入 / 输出" value={selectedRow.tokenPair} />
                       <DetailField label="净算力" value={formatTokenValue(selectedRow.computeTokens)} />
                       <DetailField label="缓存" value={formatTokenValue(selectedRow.cacheTokens)} />
+                      <DetailField label="推理" value={formatTokenValue(selectedRow.reasoningTokens)} />
                       <DetailField label="耗时" value={formatLatencySeconds(selectedRow.latencyMs)} />
                     </div>
                   </div>
