@@ -246,7 +246,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
       priority: Number.parseInt(priority, 10) || 0,
-      maxRetries: Math.max(0, Number.parseInt(maxRetries, 10) || 0),
+      maxRetries: Math.max(2, Number.parseInt(maxRetries, 10) || 2),
     });
     setAdding(false);
     if (result.ok) {
@@ -371,7 +371,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">重试次数</label>
           <input
             type="number"
-            min="0"
+            min="2"
             max="10"
             value={maxRetries}
             onInput={(e) => setMaxRetries((e.target as HTMLInputElement).value)}
@@ -438,7 +438,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   const mainModels = entry.models.length > 0 ? entry.models : entry.model ? [entry.model] : [];
   const apiKeyValue = showApiKey ? apiKey : (entry.apiKeyMasked || "******");
   const normalizedPriority = Number.parseInt(priority, 10) || 0;
-  const normalizedMaxRetries = Math.max(0, Number.parseInt(maxRetries, 10) || 0);
+  const normalizedMaxRetries = Math.max(2, Number.parseInt(maxRetries, 10) || 2);
 
   useEffect(() => {
     setBaseUrl(entry.baseUrl);
@@ -503,7 +503,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
     if (maxRetriesTimerRef.current) clearTimeout(maxRetriesTimerRef.current);
     maxRetriesTimerRef.current = setTimeout(() => {
       maxRetriesTimerRef.current = null;
-      const next = Math.max(0, Number.parseInt(value, 10) || 0);
+      const next = Math.max(2, Number.parseInt(value, 10) || 2);
       if (next === entry.maxRetries) return;
       void onUpdateRouting(entry.id, { maxRetries: next });
     }, 350);
@@ -698,7 +698,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">重试次数</label>
           <input
             type="number"
-            min="0"
+            min="2"
             max="10"
             value={maxRetries}
             onInput={(e) => scheduleMaxRetriesPersist((e.target as HTMLInputElement).value)}

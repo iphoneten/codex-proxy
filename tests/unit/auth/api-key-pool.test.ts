@@ -38,6 +38,20 @@ describe("ApiKeyPool", () => {
     expect(entry.lastUsedAt).toBeNull();
   });
 
+  it("normalizes retry count to a minimum of 2", () => {
+    const entry = pool.add({
+      provider: "openai",
+      model: "gpt-5.4",
+      apiKey: "k1",
+      maxRetries: 0,
+    });
+
+    expect(entry.maxRetries).toBe(2);
+
+    pool.setRouting(entry.id, { maxRetries: 1 });
+    expect(pool.getEntry(entry.id)!.maxRetries).toBe(2);
+  });
+
   it("uses default baseUrl for builtin providers", () => {
     const a = pool.add({ provider: "anthropic", model: "claude-opus-4-6", apiKey: "k1" });
     const o = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2" });

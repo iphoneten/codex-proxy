@@ -237,6 +237,7 @@ async function createDirectUpstreamResponse(options: {
       ? request.codexRequest
       : { ...request.codexRequest, model: resolvedModel };
     const maxRetries = candidate.entry?.maxRetries ?? 0;
+    let remainingRetries = maxRetries;
     const modelFallbacks = buildModelFallbacks(candidate.entry, resolvedModel);
 
     candidateAttempt:
@@ -246,7 +247,8 @@ async function createDirectUpstreamResponse(options: {
         ? { ...candidateRequest, model: fallbackModel }
         : candidateRequest;
 
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let attempt = 0;
+      while (true) {
         const startMs = Date.now();
         try {
           const response = await createResponseWithTimeout({
@@ -304,9 +306,11 @@ async function createDirectUpstreamResponse(options: {
           }
 
           if (!retryable) throw error;
-          if (attempt >= maxRetries) break candidateAttempt;
+          if (remainingRetries <= 0) break candidateAttempt;
+          remainingRetries -= 1;
+          attempt += 1;
           console.warn(
-            `[Direct] Upstream ${candidate.adapter.tag} retry ${attempt + 1}/${maxRetries} for model=${request.model}`,
+            `[Direct] Upstream ${candidate.adapter.tag} retry ${attempt}/${maxRetries} for model=${request.model}`,
           );
         }
       }

@@ -342,7 +342,7 @@ function normalizePriority(priority: number | undefined): number {
 
 function normalizeMaxRetries(maxRetries: number | undefined): number {
   if (!Number.isFinite(maxRetries)) return 2;
-  return Math.max(0, Math.trunc(maxRetries!));
+  return Math.max(2, Math.trunc(maxRetries!));
 }
 
 function normalizeApiKeyEntry(entry: ApiKeyEntry): ApiKeyEntry {

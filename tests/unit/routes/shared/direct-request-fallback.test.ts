@@ -62,6 +62,58 @@ describe("handleDirectRequest fallback", () => {
     expect(second.createResponse).toHaveBeenCalledTimes(1);
   });
 
+  it("honors the direct upstream retry count configured by the user", async () => {
+    const first = makeUpstream("first", async () => {
+      throw new CodexApiError(503, "temporarily unavailable");
+    });
+    const second = makeUpstream("second", async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const fmt = createMockFormatAdapter();
+    const req = createDefaultRequest();
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: first as never,
+      upstreamCandidates: [
+        { adapter: first as never, entry: { id: "1", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 10, status: "active", addedAt: "", lastUsedAt: null } },
+        { adapter: second as never, entry: { id: "2", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "b", baseUrl: "", label: null, priority: 1, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(first.createResponse).toHaveBeenCalledTimes(11);
+    expect(second.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries 429 on the same direct upstream according to the configured retry count", async () => {
+    const first = makeUpstream("first", async () => {
+      throw new CodexApiError(429, "rate limited");
+    });
+    const second = makeUpstream("second", async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const fmt = createMockFormatAdapter();
+    const req = createDefaultRequest();
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: first as never,
+      upstreamCandidates: [
+        { adapter: first as never, entry: { id: "1", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 2, status: "active", addedAt: "", lastUsedAt: null } },
+        { adapter: second as never, entry: { id: "2", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "b", baseUrl: "", label: null, priority: 1, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(first.createResponse).toHaveBeenCalledTimes(3);
+    expect(second.createResponse).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the next configured upstream model when the requested model is unsupported", async () => {
     const upstream = {
       tag: "first",
