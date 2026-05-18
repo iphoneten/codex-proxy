@@ -138,6 +138,17 @@ export function useApiKeys() {
     } catch { /* ignore */ }
   }, [loadKeys]);
 
+  const reorderKeys = useCallback(async (ids: string[]) => {
+    try {
+      await fetch("/auth/api-keys/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      await loadKeys();
+    } catch { /* ignore */ }
+  }, [loadKeys]);
+
   const updateBaseUrl = useCallback(async (id: string, baseUrl: string) => {
     try {
       await fetch(`/auth/api-keys/${id}/base-url`, {
@@ -294,6 +305,7 @@ export function useApiKeys() {
     addEntryModels,
     removeEntryModels,
     updateRouting,
+    reorderKeys,
     importKeys,
     exportKeys,
     fetchCustomModels,

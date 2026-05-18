@@ -25,10 +25,14 @@ import { isCloudflareChallengeResponse } from "../../tls/direct-fallback.js";
 import { getConfig } from "../../config.js";
 
 function resolveUpstreamName(
-  entry: { label?: string | null; models?: string[] } | undefined,
+  entry: { label?: string | null; baseUrl?: string } | undefined,
   fallback: string,
 ): string {
-  return entry?.label?.trim() || entry?.models?.[0] || fallback;
+  const label = entry?.label?.trim();
+  if (label) return label;
+  const baseUrl = entry?.baseUrl?.trim();
+  if (baseUrl) return baseUrl;
+  return fallback;
 }
 
 function createAttemptTimeoutError(timeoutMs: number, upstreamTag: string, model: string): Error {

@@ -404,10 +404,16 @@ function providerBadgeColor(provider: ApiKeyProvider): string {
   }
 }
 
-function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
+function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart, onDragOver, onDrop, onDragEnd, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
   entry: GroupedApiKeyEntry;
   usage: AggregatedUpstreamUsage | null;
   usageLoading: boolean;
+  draggable?: boolean;
+  isDragging?: boolean;
+  onDragStart?: (id: string) => void;
+  onDragOver?: (id: string, event: DragEvent) => void;
+  onDrop?: (id: string, event: DragEvent) => void;
+  onDragEnd?: () => void;
   onDelete: (id: string) => void;
   onToggle: (id: string, status: "active" | "disabled") => void;
   onUpdateRouting: (id: string, routing: { priority?: number; maxRetries?: number }) => Promise<void>;
@@ -582,8 +588,24 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   };
 
   return (
-    <div class={`flex flex-col gap-3 px-4 py-3 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""}`}>
+    <div
+      class={`flex flex-col gap-3 px-4 py-3 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""} ${isDragging ? "opacity-60 ring-2 ring-primary/30" : ""}`}
+      draggable={draggable}
+      onDragStart={() => onDragStart?.(entry.id)}
+      onDragOver={(event) => onDragOver?.(entry.id, event)}
+      onDrop={(event) => onDrop?.(entry.id, event)}
+      onDragEnd={() => onDragEnd?.()}
+    >
       <div class="flex items-center gap-2">
+        <button
+          type="button"
+          title="拖动排序"
+          class="cursor-grab active:cursor-grabbing p-1 text-slate-400 dark:text-text-dim hover:text-primary transition-colors"
+        >
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01" />
+          </svg>
+        </button>
         <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${providerBadgeColor(entry.provider)}`}>
           {entry.provider}
         </span>
@@ -834,11 +856,12 @@ function UsageMetricCard({ label, value }: { label: string; value: string }) {
 }
 
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, reorderKeys, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
   const { summary, loading: usageLoading } = useUsageSummary();
   const groupedKeys = useMemo(() => groupEntries(keys), [keys]);
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingPersistRef = useRef(new Set<Promise<void>>());
 
@@ -857,6 +880,29 @@ export function ApiKeyManager() {
   const handleUpdateRouting = useCallback((id: string, routing: { priority?: number; maxRetries?: number }) => {
     return trackPersist(updateRouting(id, routing));
   }, [trackPersist, updateRouting]);
+
+  const moveGroupedKey = useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    const sourceIndex = groupedKeys.findIndex((entry) => entry.id === sourceId);
+    const targetIndex = groupedKeys.findIndex((entry) => entry.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const next = [...groupedKeys];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    void trackPersist(reorderKeys(next.flatMap((entry) => entry.sourceIds)));
+  }, [groupedKeys, reorderKeys, trackPersist]);
+
+  const handleDragOver = useCallback((targetId: string, event: DragEvent) => {
+    event.preventDefault();
+    if (!draggingId || draggingId === targetId) return;
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  }, [draggingId]);
+
+  const handleDrop = useCallback((targetId: string, event: DragEvent) => {
+    event.preventDefault();
+    if (draggingId) moveGroupedKey(draggingId, targetId);
+    setDraggingId(null);
+  }, [draggingId, moveGroupedKey]);
 
   const handleImport = useCallback(async () => {
     const files = fileRef.current?.files;
@@ -967,6 +1013,12 @@ export function ApiKeyManager() {
               entry={entry}
               usage={aggregateUsageForEntry(entry, summary?.upstream_breakdown)}
               usageLoading={usageLoading}
+              draggable
+              isDragging={draggingId === entry.id}
+              onDragStart={setDraggingId}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              onDragEnd={() => setDraggingId(null)}
               onDelete={deleteKey}
               onToggle={toggleStatus}
               onUpdateBaseUrl={handleUpdateBaseUrl}

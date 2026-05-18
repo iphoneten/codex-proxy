@@ -157,9 +157,9 @@ describe("LogsPage", () => {
 
     renderLogsPage();
 
-    expect(screen.getByText("1.20K tok / 0.30K tok")).toBeTruthy();
-    expect(screen.getByText("0.80K tok")).toBeTruthy();
-    expect(screen.getByText("0.70K tok")).toBeTruthy();
+    expect(screen.getByText("1.20K / 0.30K")).toBeTruthy();
+    expect(screen.getByText("0.80K")).toBeTruthy();
+    expect(screen.getByText("0.70K")).toBeTruthy();
   });
 
   it("aggregates retry attempts for the same egress upstream", () => {
@@ -206,8 +206,8 @@ describe("LogsPage", () => {
     expect(screen.getByText("codex")).toBeTruthy();
     expect(retryCount.classList.contains("text-red-600")).toBe(true);
     expect(screen.getByText("1.25 s")).toBeTruthy();
-    expect(screen.getByText("0.11K tok")).toBeTruthy();
-    expect(screen.getByText("0.04K tok")).toBeTruthy();
+    expect(screen.getByText("0.11K")).toBeTruthy();
+    expect(screen.getByText("0.04K")).toBeTruthy();
     expect(screen.queryByText("1.00 s")).toBeNull();
   });
 
@@ -253,7 +253,7 @@ describe("LogsPage", () => {
     expect(screen.queryByText("+1")).toBeNull();
   });
 
-  it("uses request model instead of the generic custom provider label", () => {
+  it("does not render a model id as the provider label", () => {
     mockLogs.useLogs.mockReturnValue(
       makeLogsState({
         records: [
@@ -264,9 +264,10 @@ describe("LogsPage", () => {
             ts: "2026-04-15T00:00:01.000Z",
             method: "POST",
             path: "/v1/responses",
-            model: "qwen3-coder",
+            model: "gpt-5.5",
             provider: "custom",
-            request: { model: "qwen/qwen3-coder" },
+            upstreamName: "gpt-5.5",
+            request: { model: "gpt-5.5" },
             status: 200,
             latencyMs: 100,
           },
@@ -277,8 +278,39 @@ describe("LogsPage", () => {
 
     renderLogsPage();
 
-    expect(screen.getByText("qwen/qwen3-coder")).toBeTruthy();
-    expect(screen.queryByText("custom")).toBeNull();
+    expect(screen.getByText("Custom upstream")).toBeTruthy();
+  });
+
+  it("opens log detail dialog with request id", () => {
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "1",
+            requestId: "rid-detail-123",
+            direction: "egress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.5",
+            upstreamName: "codex1",
+            inputTokens: 166_920,
+            outputTokens: 100,
+            cachedTokens: 166_400,
+            status: 200,
+            latencyMs: 6480,
+          },
+        ],
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+    fireEvent.click(screen.getByText("codex1"));
+
+    expect(screen.getByText("日志详情")).toBeTruthy();
+    expect(screen.getAllByText("rid-detail-123").length).toBeGreaterThan(0);
+    expect(screen.getByText("Request ID")).toBeTruthy();
   });
 
   it("renders and toggles the logs mode button", () => {

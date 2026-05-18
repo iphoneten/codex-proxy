@@ -236,6 +236,27 @@ describe("ApiKeyPool", () => {
     });
   });
 
+  it("reorders entries by assigning descending priorities", () => {
+    const first = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
+    const second = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2" });
+    const third = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k3" });
+
+    expect(pool.reorder([third.id, first.id, second.id])).toBe(true);
+
+    const ordered = pool.getByModel("gpt-5.4");
+    expect(ordered.map((entry) => entry.id)).toEqual([third.id, first.id, second.id]);
+    expect(ordered.map((entry) => entry.priority)).toEqual([3, 2, 1]);
+  });
+
+  it("rejects reorder requests with duplicate or missing ids", () => {
+    const first = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
+    const second = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2" });
+
+    expect(pool.reorder([first.id, first.id])).toBe(false);
+    expect(pool.reorder([first.id, "missing"])).toBe(false);
+    expect(pool.getByModel("gpt-5.4").map((entry) => entry.id)).toEqual([first.id, second.id]);
+  });
+
   // ── Persistence ───────────────────────────────────────────────
 
   it("persists entries across pool instances", () => {

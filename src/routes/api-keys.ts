@@ -110,6 +110,7 @@ const BaseUrlSchema = z.object({ baseUrl: z.string().trim().min(1) });
 const ApiKeySchema = z.object({ apiKey: z.string().trim().min(1) });
 const StatusSchema = z.object({ status: z.enum(["active", "disabled"]) });
 const BatchDeleteSchema = z.object({ ids: z.array(z.string()).min(1) });
+const ReorderSchema = z.object({ ids: z.array(z.string()).min(1) });
 const AddModelsSchema = z.object({ models: ModelsSchema });
 const RemoveModelsSchema = z.object({ models: ModelsSchema });
 
@@ -228,6 +229,16 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
       if (pool.remove(id)) deleted++;
     }
     return c.json({ success: true, deleted });
+  });
+
+  app.post("/auth/api-keys/reorder", async (c) => {
+    const parsed = await parseJsonRequest(c, ReorderSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.reorder(parsed.data.ids)) {
+      c.status(400);
+      return c.json({ error: "Invalid API key order" });
+    }
+    return c.json({ success: true });
   });
 
   // ── Per-key routes ────────────────────────────────────────────

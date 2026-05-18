@@ -240,6 +240,22 @@ describe("api key routes", () => {
     ]);
   });
 
+  it("reorders upstream entries", async () => {
+    const first = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
+    const second = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2" });
+    const third = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k3" });
+
+    const res = await app.request("/auth/api-keys/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [third.id, first.id, second.id] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(pool.getByModel("gpt-5.4").map((entry) => entry.id)).toEqual([third.id, first.id, second.id]);
+  });
+
   it("batch deletes existing ids and ignores missing ids", async () => {
     const first = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
     const second = pool.add({ provider: "openai", model: "gpt-5.4-mini", apiKey: "k2" });

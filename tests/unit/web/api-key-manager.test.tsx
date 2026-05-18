@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 
 const mockApiKeys = vi.hoisted(() => ({
   useApiKeys: vi.fn(),
@@ -54,6 +54,7 @@ describe("ApiKeyManager", () => {
       addEntryModels: vi.fn(),
       removeEntryModels: vi.fn(),
       updateRouting: vi.fn(),
+      reorderKeys: vi.fn(),
       importKeys: vi.fn(),
       exportKeys: vi.fn(),
       fetchCustomModels: vi.fn(),
@@ -109,4 +110,52 @@ describe("ApiKeyManager", () => {
     expect(screen.getByText("200")).toBeTruthy();
     expect(screen.getByText("5")).toBeTruthy();
   });
+  it("reorders upstream rows with drag and drop", async () => {
+    const reorderKeys = vi.fn(async () => undefined);
+    mockApiKeys.useApiKeys.mockReturnValue({
+      ...mockApiKeys.useApiKeys(),
+      keys: [
+        {
+          id: "1",
+          provider: "custom",
+          models: ["codex-a"],
+          apiKey: "",
+          apiKeyMasked: "sk***a",
+          baseUrl: "https://a.example.com/v1",
+          label: "线路 A",
+          priority: 2,
+          maxRetries: 2,
+          status: "active",
+          addedAt: "2026-05-16T00:00:00.000Z",
+          lastUsedAt: null,
+        },
+        {
+          id: "2",
+          provider: "custom",
+          models: ["codex-b"],
+          apiKey: "",
+          apiKeyMasked: "sk***b",
+          baseUrl: "https://b.example.com/v1",
+          label: "线路 B",
+          priority: 1,
+          maxRetries: 2,
+          status: "active",
+          addedAt: "2026-05-16T00:00:01.000Z",
+          lastUsedAt: null,
+        },
+      ],
+      reorderKeys,
+    });
+
+    render(<ApiKeyManager />);
+
+    const firstRow = screen.getByText("线路 A").closest("div[draggable]")!;
+    const secondRow = screen.getByText("线路 B").closest("div[draggable]")!;
+    fireEvent.dragStart(firstRow);
+    fireEvent.dragOver(secondRow);
+    fireEvent.drop(secondRow);
+
+    expect(reorderKeys).toHaveBeenCalledWith(["2", "1"]);
+  });
+
 });

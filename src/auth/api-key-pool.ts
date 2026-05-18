@@ -224,6 +224,24 @@ export class ApiKeyPool {
     return true;
   }
 
+  reorder(ids: string[]): boolean {
+    const idSet = new Set(ids);
+    if (idSet.size !== ids.length) return false;
+    const entriesById = new Map(this.entries.map((entry) => [entry.id, entry]));
+    if (ids.some((id) => !entriesById.has(id))) return false;
+
+    const untouched = this.entries.filter((entry) => !idSet.has(entry.id));
+    const maxPriority = this.entries.reduce((max, entry) => Math.max(max, entry.priority), 0);
+    ids.forEach((id, index) => {
+      const entry = entriesById.get(id)!;
+      entry.priority = maxPriority + ids.length - index;
+    });
+    const reordered = ids.map((id) => entriesById.get(id)!);
+    this.entries = [...reordered, ...untouched];
+    this.persist();
+    return true;
+  }
+
   addModels(id: string, models: string[]): boolean {
     const entry = this.entries.find((e) => e.id === id);
     if (!entry) return false;

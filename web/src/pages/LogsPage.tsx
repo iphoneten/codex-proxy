@@ -1,4 +1,4 @@
-import { useMemo } from "preact/hooks";
+import { useMemo, useState } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useLogs, type LogRecord } from "../../../shared/hooks/use-logs";
 import { useSettings } from "../../../shared/hooks/use-settings";
@@ -19,13 +19,19 @@ function getLoggedRequestModel(record: LogRecord): string | null {
   return typeof model === "string" && model.trim() ? model.trim() : null;
 }
 
+function looksLikeModelId(value: string, record: LogRecord): boolean {
+  if (record.model && value === record.model) return true;
+  const lower = value.toLowerCase();
+  const knownPrefixes = ["gpt", "claude", "gemini", "qwen", "deepseek", "llama", "mistral", "o1", "o3", "o4"];
+  if (knownPrefixes.some((prefix) => lower.startsWith(prefix))) return true;
+  return value.includes("/") && !value.startsWith("http://") && !value.startsWith("https://");
+}
+
 function getUpstreamLabel(record: LogRecord): string {
   const upstreamName = record.upstreamName?.trim();
-  if (upstreamName) return upstreamName;
-  if (record.provider === "custom") {
-    return getLoggedRequestModel(record) ?? record.model ?? "Custom upstream";
-  }
-  return record.provider ?? "-";
+  if (upstreamName && !looksLikeModelId(upstreamName, record)) return upstreamName;
+  if (record.provider && record.provider !== "custom") return record.provider;
+  return "Custom upstream";
 }
 
 function getAggregationKey(record: LogRecord): string {
@@ -61,7 +67,7 @@ function getComputeTokens(record: LogRecord): number | null {
 
 function formatTokenValue(value: number | null | undefined): string {
   if (value == null) return "-";
-  return `${(value / 1_000).toFixed(2)}K tok`;
+  return `${(value / 1_000).toFixed(2)}K`;
 }
 
 function getTokenPair(record: LogRecord): string {
@@ -97,12 +103,22 @@ export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
   return rows;
 }
 
+function DetailField({ label, value }: { label: string; value: string }) {
+  return (
+    <div class="rounded-lg border border-slate-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark px-3 py-2">
+      <div class="text-[11px] text-slate-500 dark:text-text-dim mb-1">{label}</div>
+      <div class="break-all text-slate-800 dark:text-text-main">{value}</div>
+    </div>
+  );
+}
+
 export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
   const logs = useLogs();
   const settings = useSettings();
   const gs = useGeneralSettings(settings.apiKey);
   const logsLlmOnly = gs.data?.logs_llm_only ?? true;
+  const [selectedRow, setSelectedRow] = useState<DisplayLogRecord | null>(null);
 
   const formatLatencySeconds = (value: number | null | undefined): string => {
     if (value == null) return "-";
@@ -187,7 +203,17 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                 {list.map((row) => (
                   <div
                     key={row.id}
-                    class="grid grid-cols-[72px_1.6fr_1.3fr_1.3fr_120px_88px_88px_84px_96px] px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark gap-2"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`查看日志 ${row.requestId}`}
+                    class="grid grid-cols-[72px_1.6fr_1.3fr_1.3fr_120px_88px_88px_84px_96px] px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark gap-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-bg-dark/70"
+                    onClick={() => setSelectedRow(row)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedRow(row);
+                      }
+                    }}
                   >
                     <div class="col-span-1 text-slate-500">{row.time}</div>
                     <div class="truncate">{row.path}</div>
@@ -208,6 +234,37 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                   </div>
                 ))}
               </div>
+              {selectedRow && (
+                <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4" onClick={() => setSelectedRow(null)}>
+                  <div class="w-full max-w-3xl rounded-xl border border-slate-200 dark:border-border-dark bg-white dark:bg-bg-dark shadow-xl" onClick={(event) => event.stopPropagation()}>
+                    <div class="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-border-dark px-4 py-3">
+                      <div>
+                        <div class="text-sm font-semibold text-slate-800 dark:text-text-main">日志详情</div>
+                        <div class="text-xs text-slate-500 dark:text-text-dim">requestId: {selectedRow.requestId}</div>
+                      </div>
+                      <button
+                        type="button"
+                        class="px-2 py-1 text-xs rounded-md border border-slate-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30"
+                        onClick={() => setSelectedRow(null)}
+                      >
+                        关闭
+                      </button>
+                    </div>
+                    <div class="grid gap-3 px-4 py-4 text-xs sm:grid-cols-2">
+                      <DetailField label="Request ID" value={selectedRow.requestId} />
+                      <DetailField label="方向" value={selectedRow.direction} />
+                      <DetailField label="路径" value={selectedRow.path} />
+                      <DetailField label="模型" value={selectedRow.model ?? "-"} />
+                      <DetailField label="上游" value={getUpstreamLabel(selectedRow)} />
+                      <DetailField label="状态" value={selectedRow.status?.toString() ?? "-"} />
+                      <DetailField label="输入 / 输出" value={selectedRow.tokenPair} />
+                      <DetailField label="净算力" value={formatTokenValue(selectedRow.computeTokens)} />
+                      <DetailField label="缓存" value={formatTokenValue(selectedRow.cacheTokens)} />
+                      <DetailField label="耗时" value={formatLatencySeconds(selectedRow.latencyMs)} />
+                    </div>
+                  </div>
+                </div>
+              )}
               <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500">
                 <button
                   class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
