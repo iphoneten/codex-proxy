@@ -14,6 +14,7 @@ export function enqueueLogEntry(entry: {
   stream?: boolean | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  cachedTokens?: number | null;
   error?: string | null;
   request?: unknown;
   response?: unknown;
@@ -36,6 +37,7 @@ export function patchLogEntryByRequestId(
     latencyMs?: number | null;
     inputTokens?: number | null;
     outputTokens?: number | null;
+    cachedTokens?: number | null;
     error?: string | null;
   },
 ): void {

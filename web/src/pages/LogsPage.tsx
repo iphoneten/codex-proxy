@@ -6,17 +6,31 @@ import { useGeneralSettings } from "../../../shared/hooks/use-general-settings";
 
 type DisplayLogRecord = LogRecord & {
   time: string;
+  tokenPair: string;
   computeTokens: number | null;
+  cacheTokens: number | null;
   attemptCount: number;
 };
 
+function getLoggedRequestModel(record: LogRecord): string | null {
+  const request = record.request;
+  if (!request || typeof request !== "object") return null;
+  const model = (request as { model?: unknown }).model;
+  return typeof model === "string" && model.trim() ? model.trim() : null;
+}
+
 function getUpstreamLabel(record: LogRecord): string {
-  return record.upstreamName ?? record.provider ?? "-";
+  const upstreamName = record.upstreamName?.trim();
+  if (upstreamName) return upstreamName;
+  if (record.provider === "custom") {
+    return getLoggedRequestModel(record) ?? record.model ?? "Custom upstream";
+  }
+  return record.provider ?? "-";
 }
 
 function getAggregationKey(record: LogRecord): string {
-  const upstreamKey = record.upstreamName?.trim() || record.provider?.trim();
-  if (record.direction === "egress" && record.requestId && record.requestId !== "-" && upstreamKey) {
+  const upstreamKey = getUpstreamLabel(record);
+  if (record.direction === "egress" && record.requestId && record.requestId !== "-" && upstreamKey !== "-") {
     return `${record.direction}:${record.requestId}:${upstreamKey}`;
   }
   return `${record.direction}:${record.id}`;
@@ -28,15 +42,31 @@ function addLatency(left: number | null | undefined, right: number | null | unde
   return left + right;
 }
 
+function getCacheTokens(record: LogRecord): number | null {
+  if (record.direction !== "egress") return null;
+  return typeof record.cachedTokens === "number" ? record.cachedTokens : 0;
+}
+
 function getComputeTokens(record: LogRecord): number | null {
   if (
     record.direction === "egress" &&
     typeof record.inputTokens === "number" &&
     typeof record.outputTokens === "number"
   ) {
-    return record.inputTokens + record.outputTokens;
+    const cachedTokens = getCacheTokens(record) ?? 0;
+    return Math.max(0, record.inputTokens - cachedTokens) + record.outputTokens;
   }
   return null;
+}
+
+function formatTokenValue(value: number | null | undefined): string {
+  if (value == null) return "-";
+  return `${(value / 1_000).toFixed(2)}K tok`;
+}
+
+function getTokenPair(record: LogRecord): string {
+  if (record.direction !== "egress") return "-";
+  return `${formatTokenValue(record.inputTokens)} / ${formatTokenValue(record.outputTokens)}`;
 }
 
 export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
@@ -50,7 +80,9 @@ export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
       const row: DisplayLogRecord = {
         ...record,
         time: new Date(record.ts).toLocaleTimeString(),
+        tokenPair: getTokenPair(record),
         computeTokens: getComputeTokens(record),
+        cacheTokens: getCacheTokens(record),
         attemptCount: 1,
       };
       byKey.set(key, row);
@@ -71,13 +103,6 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const settings = useSettings();
   const gs = useGeneralSettings(settings.apiKey);
   const logsLlmOnly = gs.data?.logs_llm_only ?? true;
-
-  const formatTokenValue = (value: number | null): string => {
-    if (value == null) return "-";
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tok`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K tok`;
-    return `${value} tok`;
-  };
 
   const formatLatencySeconds = (value: number | null | undefined): string => {
     if (value == null) return "-";
@@ -140,16 +165,15 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
       <div class="min-w-0">
         <div class="border border-slate-200 dark:border-border-dark rounded-lg overflow-hidden bg-white dark:bg-bg-dark">
           <div class="overflow-x-auto">
-            <div class="min-w-[760px]">
-              <div class="grid grid-cols-[72px_76px_1.6fr_1.3fr_1.3fr_96px_96px_88px_84px_96px] text-xs text-slate-500 px-3 py-2 border-b border-slate-200 dark:border-border-dark gap-2">
+            <div class="min-w-[820px]">
+              <div class="grid grid-cols-[72px_1.6fr_1.3fr_1.3fr_120px_88px_88px_84px_96px] text-xs text-slate-500 px-3 py-2 border-b border-slate-200 dark:border-border-dark gap-2">
                 <div class="col-span-1">{t("logsTime")}</div>
-                <div class="col-span-1">{t("logsDirection")}</div>
                 <div>{t("logsPath")}</div>
                 <div>{t("logsModel")}</div>
                 <div>{t("logsProvider")}</div>
-                <div class="col-span-1">{t("logsInputTokens")}</div>
-                <div class="col-span-1">{t("logsOutputTokens")}</div>
+                <div class="col-span-1">{t("logsTokens")}</div>
                 <div class="col-span-1">{t("logsCompute")}</div>
+                <div class="col-span-1">{t("logsCachedTokens")}</div>
                 <div class="col-span-1">{t("logsStatus")}</div>
                 <div class="col-span-1">{t("logsLatency")}</div>
               </div>
@@ -163,14 +187,9 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                 {list.map((row) => (
                   <div
                     key={row.id}
-                    class="grid grid-cols-[72px_76px_1.6fr_1.3fr_1.3fr_96px_96px_88px_84px_96px] px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark gap-2"
+                    class="grid grid-cols-[72px_1.6fr_1.3fr_1.3fr_120px_88px_88px_84px_96px] px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark gap-2"
                   >
                     <div class="col-span-1 text-slate-500">{row.time}</div>
-                    <div class="col-span-1">
-                      <span class={`px-1.5 py-0.5 rounded ${row.direction === "ingress" ? "bg-success-container text-success" : "bg-info-container text-info"}`}>
-                        {t(`logsFilter.${row.direction}`)}
-                      </span>
-                    </div>
                     <div class="truncate">{row.path}</div>
                     <div class="truncate">{row.model ?? "-"}</div>
                     <div class="truncate" title={row.requestId}>
@@ -181,9 +200,9 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                         </span>
                       ) : null}
                     </div>
-                    <div class="col-span-1">{row.inputTokens != null ? row.inputTokens : "-"}</div>
-                    <div class="col-span-1">{row.outputTokens != null ? row.outputTokens : "-"}</div>
+                    <div class="col-span-1">{row.tokenPair}</div>
                     <div class="col-span-1">{formatTokenValue(row.computeTokens)}</div>
+                    <div class="col-span-1">{formatTokenValue(row.cacheTokens)}</div>
                     <div class="col-span-1">{row.status ?? "-"}</div>
                     <div class="col-span-1">{formatLatencySeconds(row.latencyMs)}</div>
                   </div>

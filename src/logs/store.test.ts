@@ -116,6 +116,31 @@ describe("LogStore", () => {
     });
   });
 
+  it("keeps cached token metadata on patched records", async () => {
+    store.enqueue({
+      id: "1",
+      requestId: "r1",
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+    });
+
+    await Promise.resolve();
+    store.patchLatestByRequestId("r1", "egress", {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedTokens: 700,
+    });
+
+    const result = store.list({ direction: "egress", limit: 10, offset: 0 });
+    expect(result.records[0]).toMatchObject({
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedTokens: 700,
+    });
+  });
+
   it("trims existing records when capacity is lowered", async () => {
     for (const id of ["1", "2", "3", "4"]) {
       store.enqueue({

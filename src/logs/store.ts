@@ -17,6 +17,7 @@ export interface LogRecord {
   stream?: boolean | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  cachedTokens?: number | null;
   sizeBytes?: number | null;
   error?: string | null;
   tags?: string[];

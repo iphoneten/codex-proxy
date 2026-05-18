@@ -146,6 +146,7 @@ describe("LogsPage", () => {
             upstreamName: "codex",
             inputTokens: 1200,
             outputTokens: 300,
+            cachedTokens: 700,
             status: 200,
             latencyMs: 1250,
           },
@@ -156,7 +157,9 @@ describe("LogsPage", () => {
 
     renderLogsPage();
 
-    expect(screen.getByText("1.5K tok")).toBeTruthy();
+    expect(screen.getByText("1.20K tok / 0.30K tok")).toBeTruthy();
+    expect(screen.getByText("0.80K tok")).toBeTruthy();
+    expect(screen.getByText("0.70K tok")).toBeTruthy();
   });
 
   it("aggregates retry attempts for the same egress upstream", () => {
@@ -176,6 +179,7 @@ describe("LogsPage", () => {
             latencyMs: 250,
             inputTokens: 100,
             outputTokens: 50,
+            cachedTokens: 40,
           },
           {
             id: "1",
@@ -202,7 +206,8 @@ describe("LogsPage", () => {
     expect(screen.getByText("codex")).toBeTruthy();
     expect(retryCount.classList.contains("text-red-600")).toBe(true);
     expect(screen.getByText("1.25 s")).toBeTruthy();
-    expect(screen.getByText("150 tok")).toBeTruthy();
+    expect(screen.getByText("0.11K tok")).toBeTruthy();
+    expect(screen.getByText("0.04K tok")).toBeTruthy();
     expect(screen.queryByText("1.00 s")).toBeNull();
   });
 
@@ -248,6 +253,34 @@ describe("LogsPage", () => {
     expect(screen.queryByText("+1")).toBeNull();
   });
 
+  it("uses request model instead of the generic custom provider label", () => {
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "1",
+            requestId: "r-custom",
+            direction: "egress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "qwen3-coder",
+            provider: "custom",
+            request: { model: "qwen/qwen3-coder" },
+            status: 200,
+            latencyMs: 100,
+          },
+        ],
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(screen.getByText("qwen/qwen3-coder")).toBeTruthy();
+    expect(screen.queryByText("custom")).toBeNull();
+  });
+
   it("renders and toggles the logs mode button", () => {
     const save = vi.fn();
     mockLogs.useLogs.mockReturnValue(makeLogsState());
@@ -267,6 +300,6 @@ describe("LogsPage", () => {
 
     const timeHeader = screen.getByText("Time");
     expect(hasAncestorClass(timeHeader, "overflow-x-auto")).toBe(true);
-    expect(hasAncestorClass(timeHeader, "min-w-[760px]")).toBe(true);
+    expect(hasAncestorClass(timeHeader, "min-w-[820px]")).toBe(true);
   });
 });

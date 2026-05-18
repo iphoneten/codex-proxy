@@ -16,5 +16,6 @@ export function enrichEgressLogUsage(options: {
     ...(upstreamName !== undefined ? { upstreamName } : {}),
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
+    cachedTokens: usage.cached_tokens ?? null,
   });
 }
