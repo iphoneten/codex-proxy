@@ -159,6 +159,95 @@ describe("LogsPage", () => {
     expect(screen.getByText("1.5K tok")).toBeTruthy();
   });
 
+  it("aggregates retry attempts for the same egress upstream", () => {
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "2",
+            requestId: "r-retry",
+            direction: "egress",
+            ts: "2026-04-15T00:00:02.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.4",
+            provider: "codex",
+            status: 200,
+            latencyMs: 250,
+            inputTokens: 100,
+            outputTokens: 50,
+          },
+          {
+            id: "1",
+            requestId: "r-retry",
+            direction: "egress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.4",
+            provider: "codex",
+            status: 502,
+            latencyMs: 1000,
+            error: "empty response",
+          },
+        ],
+        total: 2,
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    const retryCount = screen.getByText("+1");
+    expect(screen.getByText("codex")).toBeTruthy();
+    expect(retryCount.classList.contains("text-red-600")).toBe(true);
+    expect(screen.getByText("1.25 s")).toBeTruthy();
+    expect(screen.getByText("150 tok")).toBeTruthy();
+    expect(screen.queryByText("1.00 s")).toBeNull();
+  });
+
+  it("keeps different upstreams for the same request as separate rows", () => {
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "2",
+            requestId: "r-fallback",
+            direction: "egress",
+            ts: "2026-04-15T00:00:02.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.4",
+            provider: "codex",
+            status: 200,
+            latencyMs: 250,
+          },
+          {
+            id: "1",
+            requestId: "r-fallback",
+            direction: "egress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.4",
+            provider: "openai",
+            status: 502,
+            latencyMs: 1000,
+            error: "bad gateway",
+          },
+        ],
+        total: 2,
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(screen.getByText("codex")).toBeTruthy();
+    expect(screen.getByText("openai")).toBeTruthy();
+    expect(screen.queryByText("+1")).toBeNull();
+  });
+
   it("renders and toggles the logs mode button", () => {
     const save = vi.fn();
     mockLogs.useLogs.mockReturnValue(makeLogsState());

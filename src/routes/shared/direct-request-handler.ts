@@ -15,6 +15,7 @@ import { streamResponse } from "./response-processor.js";
 import { toErrorStatus } from "./proxy-error-handler.js";
 import type { HandleDirectRequestOptions } from "./proxy-handler-types.js";
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
+import type { ApiKeyEntry } from "../../auth/api-key-pool.js";
 import { canReturnStreamError, streamErrorResponse } from "./stream-error-response.js";
 import { buildDirectUpstreamStatsTarget, recordDirectUpstreamUsage } from "./direct-upstream-usage.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
@@ -71,21 +72,14 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
   const { c, upstream, req, fmt } = options;
   const upstreamCandidates = options.upstreamCandidates && options.upstreamCandidates.length > 0
     ? options.upstreamCandidates
-    : [{ adapter: upstream }];
-  const statsTarget = buildDirectUpstreamStatsTarget(
-    upstream.tag,
-    options.upstreamEntry ?? upstreamCandidates[0]?.entry,
-  );
-  const upstreamName = resolveUpstreamName(
-    options.upstreamEntry ?? upstreamCandidates[0]?.entry,
-    upstream.tag,
-  );
+    : [{ adapter: upstream, entry: options.upstreamEntry }];
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
   let rawResponse: Response;
   let activeUpstream = upstream;
+  let activeEntry: ApiKeyEntry | undefined = options.upstreamEntry ?? upstreamCandidates[0]?.entry;
   try {
     const directResult = await createDirectUpstreamResponse({
       candidates: upstreamCandidates,
@@ -95,6 +89,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     });
     rawResponse = directResult.response;
     activeUpstream = directResult.upstream;
+    activeEntry = directResult.entry;
   } catch (err) {
     if (options.fallbackToAccountPool) {
       return options.fallbackToAccountPool(err);
@@ -108,7 +103,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
       path: "/v1/responses",
       model: req.model,
       provider: activeUpstream.tag,
-      upstreamName,
+      upstreamName: resolveUpstreamName(activeEntry, activeUpstream.tag),
       status,
       latencyMs: 0,
       stream: req.isStreaming,
@@ -143,6 +138,9 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     return c.json(fmt.formatError(502, msg));
   }
 
+  const statsTarget = buildDirectUpstreamStatsTarget(activeUpstream.tag, activeEntry);
+  const upstreamName = resolveUpstreamName(activeEntry, activeUpstream.tag);
+
   if (req.isStreaming) {
     c.header("Content-Type", "text/event-stream");
     c.header("Cache-Control", "no-cache");
@@ -164,7 +162,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
       });
       await streamResponse({
         writer: s,
-        api: upstream,
+        api: activeUpstream,
         response: rawResponse,
         model: req.model,
         adapter: fmt,
@@ -212,6 +210,9 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     return c.json(result.response);
   } catch (err) {
     abortController.abort();
+    if (options.fallbackToAccountPool) {
+      return options.fallbackToAccountPool(err);
+    }
     const msg = err instanceof Error ? err.message : "Failed to collect upstream response";
     const code = toErrorStatus(0) as StatusCode;
     c.status(code);
@@ -224,10 +225,11 @@ async function createDirectUpstreamResponse(options: {
   request: HandleDirectRequestOptions["req"];
   signal: AbortSignal;
   requestId: string;
-}): Promise<{ response: Response; upstream: UpstreamAdapter }> {
+}): Promise<{ response: Response; upstream: UpstreamAdapter; entry?: ApiKeyEntry }> {
   const { candidates, request, signal, requestId } = options;
   let lastError: unknown;
-  const timeoutMs = Math.max(1_000, getConfig().api.timeout_seconds * 1000);
+  const timeoutSeconds = getConfig().api?.timeout_seconds ?? 60;
+  const timeoutMs = Math.max(1_000, timeoutSeconds * 1000);
 
   for (const candidate of candidates) {
     const resolvedModel = candidate.resolvedModel?.trim() || request.codexRequest.model;
@@ -269,7 +271,7 @@ async function createDirectUpstreamResponse(options: {
               stream: request.codexRequest.stream,
             },
           });
-          return { response, upstream: candidate.adapter };
+          return { response, upstream: candidate.adapter, entry: candidate.entry };
         } catch (error) {
           lastError = error;
           const retryable = isRetryableDirectUpstreamError(error);

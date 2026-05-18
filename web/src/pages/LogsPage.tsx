@@ -1,8 +1,69 @@
 import { useMemo } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
-import { useLogs } from "../../../shared/hooks/use-logs";
+import { useLogs, type LogRecord } from "../../../shared/hooks/use-logs";
 import { useSettings } from "../../../shared/hooks/use-settings";
 import { useGeneralSettings } from "../../../shared/hooks/use-general-settings";
+
+type DisplayLogRecord = LogRecord & {
+  time: string;
+  computeTokens: number | null;
+  attemptCount: number;
+};
+
+function getUpstreamLabel(record: LogRecord): string {
+  return record.upstreamName ?? record.provider ?? "-";
+}
+
+function getAggregationKey(record: LogRecord): string {
+  const upstreamKey = record.upstreamName?.trim() || record.provider?.trim();
+  if (record.direction === "egress" && record.requestId && record.requestId !== "-" && upstreamKey) {
+    return `${record.direction}:${record.requestId}:${upstreamKey}`;
+  }
+  return `${record.direction}:${record.id}`;
+}
+
+function addLatency(left: number | null | undefined, right: number | null | undefined): number | null {
+  if (left == null) return right ?? null;
+  if (right == null) return left;
+  return left + right;
+}
+
+function getComputeTokens(record: LogRecord): number | null {
+  if (
+    record.direction === "egress" &&
+    typeof record.inputTokens === "number" &&
+    typeof record.outputTokens === "number"
+  ) {
+    return record.inputTokens + record.outputTokens;
+  }
+  return null;
+}
+
+export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
+  const rows: DisplayLogRecord[] = [];
+  const byKey = new Map<string, DisplayLogRecord>();
+
+  for (const record of records) {
+    const key = getAggregationKey(record);
+    const existing = byKey.get(key);
+    if (!existing) {
+      const row: DisplayLogRecord = {
+        ...record,
+        time: new Date(record.ts).toLocaleTimeString(),
+        computeTokens: getComputeTokens(record),
+        attemptCount: 1,
+      };
+      byKey.set(key, row);
+      rows.push(row);
+      continue;
+    }
+
+    existing.latencyMs = addLatency(existing.latencyMs, record.latencyMs);
+    existing.attemptCount += 1;
+  }
+
+  return rows;
+}
 
 export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
@@ -27,18 +88,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
     await gs.save({ logs_llm_only: !logsLlmOnly });
   };
 
-  const list = useMemo(() => {
-    return logs.records.map((r) => ({
-      ...r,
-      time: new Date(r.ts).toLocaleTimeString(),
-      computeTokens:
-        r.direction === "egress" &&
-        typeof r.inputTokens === "number" &&
-        typeof r.outputTokens === "number"
-          ? r.inputTokens + r.outputTokens
-          : null,
-    }));
-  }, [logs.records]);
+  const list = useMemo(() => buildDisplayLogRows(logs.records), [logs.records]);
 
   const pageStart = logs.total === 0 ? 0 : logs.page * logs.pageSize + 1;
   const pageEnd = logs.total === 0 ? 0 : Math.min(logs.total, (logs.page + 1) * logs.pageSize);
@@ -123,7 +173,14 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                     </div>
                     <div class="truncate">{row.path}</div>
                     <div class="truncate">{row.model ?? "-"}</div>
-                    <div class="truncate">{row.upstreamName ?? row.provider ?? "-"}</div>
+                    <div class="truncate" title={row.requestId}>
+                      <span>{getUpstreamLabel(row)}</span>
+                      {row.attemptCount > 1 ? (
+                        <span class="ml-1 font-semibold text-red-600 dark:text-red-400">
+                          +{row.attemptCount - 1}
+                        </span>
+                      ) : null}
+                    </div>
                     <div class="col-span-1">{row.inputTokens != null ? row.inputTokens : "-"}</div>
                     <div class="col-span-1">{row.outputTokens != null ? row.outputTokens : "-"}</div>
                     <div class="col-span-1">{formatTokenValue(row.computeTokens)}</div>

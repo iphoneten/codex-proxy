@@ -155,6 +155,69 @@ describe("handleDirectRequest fallback", () => {
     expect(upstream.createResponse).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the account-pool fallback when direct response collection fails", async () => {
+    const upstream = makeUpstream("first", async () => new Response("not valid upstream output", { status: 200 }));
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async () => {
+        throw new Error("direct collect failed");
+      }),
+    });
+    const req = createDefaultRequest();
+    const fallbackToAccountPool = vi.fn(async () =>
+      new Response(JSON.stringify({ fallback: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: upstream as never,
+      upstreamCandidates: [
+        { adapter: upstream as never, resolvedModel: "gpt-5.5", entry: { id: "1", provider: "openai", model: "gpt-5.5", models: ["gpt-5.5"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+      fallbackToAccountPool,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ fallback: true });
+    expect(fallbackToAccountPool).toHaveBeenCalledTimes(1);
+    expect(fmt.collectTranslator).toHaveBeenCalledTimes(1);
+  });
+
+  it("streams through the direct candidate that actually succeeded", async () => {
+    const first = makeUpstream("first", async () => {
+      throw new CodexApiError(502, "bad gateway");
+    });
+    const second = makeUpstream("second", async () => new Response("data: {}\n\n", { status: 200 }));
+    const fmt = createMockFormatAdapter();
+    const req = { ...createDefaultRequest(), isStreaming: true };
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: first as never,
+      upstreamCandidates: [
+        { adapter: first as never, entry: { id: "1", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+        { adapter: second as never, entry: { id: "2", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "b", baseUrl: "", label: null, priority: 1, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    await res.text();
+
+    const call = fmt.streamTranslator.mock.calls[0] ?? [];
+    expect(call[0]).toMatchObject({ api: second });
+    expect(first.createResponse).toHaveBeenCalledTimes(1);
+    expect(second.createResponse).toHaveBeenCalledTimes(1);
+  });
+
   it("times out pending direct upstream attempts and falls back to the account pool", async () => {
     const upstream = makeUpstream("first", async () => new Response(null, { status: 200 }));
     upstream.createResponse = vi.fn((_request, signal: AbortSignal) =>
@@ -178,7 +241,7 @@ describe("handleDirectRequest fallback", () => {
       c,
       upstream: upstream as never,
       upstreamCandidates: [
-        { adapter: upstream as never, resolvedModel: "gpt-5.5", entry: { maxRetries: 0 } as never },
+        { adapter: upstream as never, resolvedModel: "gpt-5.5", entry: { id: "1", provider: "openai", model: "gpt-5.5", models: ["gpt-5.5"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
       ],
       req,
       fmt,
