@@ -65,7 +65,7 @@ vi.mock("@src/config.js", () => ({
     client: { app_version: "1.0.0", build_number: "100", platform: "darwin", arch: "arm64", originator: "test" },
     api: { base_url: "https://chatgpt.com" },
     model: { default: "codex" },
-    server: { port: 8080 },
+    server: { port: 8090 },
   })),
   getFingerprint: vi.fn(() => ({
     user_agent_template: "Codex/{version} ({platform}; {arch})",

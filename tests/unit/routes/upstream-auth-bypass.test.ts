@@ -423,6 +423,51 @@ describe("upstream direct routing without Codex auth", () => {
     pool.destroy();
   });
 
+  it("prefers direct upstream candidates for responses even when the requested model falls back to codex", async () => {
+    const pool = new AccountPool();
+    const adapter = createSentinelAdapter("custom-upstream");
+    const app = createResponsesRoutes(pool, undefined, undefined, {
+      resolveMatch: vi.fn(() => ({ kind: "codex", adapter: { tag: "codex" } })),
+      resolveDirectCandidates: vi.fn(() => [{ adapter, resolvedModel: "gpt-5.4" }]),
+    } as never);
+
+    const res = await app.request("/v1/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex",
+        input: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expectDirectOptions({ adapter, model: "gpt-5.4", formatTag: "Responses" });
+    pool.destroy();
+  });
+
+  it("prefers direct upstream candidates for chat even when the requested model falls back to codex", async () => {
+    const pool = new AccountPool();
+    const adapter = createSentinelAdapter("custom-upstream");
+    const app = createChatRoutes(pool, undefined, undefined, {
+      resolveMatch: vi.fn(() => ({ kind: "codex", adapter: { tag: "codex" } })),
+      resolveDirectCandidates: vi.fn(() => [{ adapter, resolvedModel: "gpt-5.4" }]),
+      resolve: vi.fn(() => adapter),
+    } as never);
+
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expectDirectOptions({ adapter, model: "gpt-5.4", formatTag: "Chat" });
+    pool.destroy();
+  });
+
   it("bypasses proxy api key validation for configured direct upstream models", async () => {
     mockConfig.server.proxy_api_key = "proxy-secret";
     const pool = new AccountPool();

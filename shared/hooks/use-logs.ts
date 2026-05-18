@@ -29,9 +29,12 @@ export interface LogRecord {
   path: string;
   model?: string | null;
   provider?: string | null;
+  upstreamName?: string | null;
   status?: number | null;
   latencyMs?: number | null;
   stream?: boolean | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   error?: string | null;
   request?: unknown;
   response?: unknown;
@@ -46,7 +49,7 @@ export interface LogState {
 }
 
 export function useLogs(refreshIntervalMs = 1500) {
-  const [direction, setDirectionState] = useState<LogFilterDirection>("all");
+  const [direction, setDirectionState] = useState<LogFilterDirection>("egress");
   const [search, setSearchState] = useState("");
   const [records, setRecords] = useState<LogRecord[]>([]);
   const [total, setTotal] = useState(0);

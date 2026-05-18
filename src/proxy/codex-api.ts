@@ -427,7 +427,7 @@ export class CodexApi {
       throw new CodexApiError(transportRes.status, errorBody);
     }
 
-    return new Response(transportRes.body, {
+    return new Response(transportRes.body as unknown as BodyInit, {
       status: transportRes.status,
       headers: transportRes.headers,
     });

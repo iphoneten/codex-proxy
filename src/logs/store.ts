@@ -11,9 +11,12 @@ export interface LogRecord {
   path: string;
   model?: string | null;
   provider?: string | null;
+  upstreamName?: string | null;
   status?: number | null;
   latencyMs?: number | null;
   stream?: boolean | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   sizeBytes?: number | null;
   error?: string | null;
   tags?: string[];
@@ -118,7 +121,7 @@ export class LogStore {
 
     if (search) {
       results = results.filter((r) => {
-        const hay = `${r.method} ${r.path} ${r.model ?? ""} ${r.provider ?? ""} ${r.status ?? ""}`.toLowerCase();
+        const hay = `${r.method} ${r.path} ${r.model ?? ""} ${r.provider ?? ""} ${r.upstreamName ?? ""} ${r.status ?? ""}`.toLowerCase();
         return hay.includes(search);
       });
     }
@@ -134,6 +137,16 @@ export class LogStore {
 
   get(id: string): LogRecord | null {
     return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  patchLatestByRequestId(requestId: string, direction: LogDirection, patch: Partial<LogRecord>): void {
+    for (let index = this.records.length - 1; index >= 0; index--) {
+      const record = this.records[index];
+      if (record.requestId === requestId && record.direction === direction) {
+        this.records[index] = { ...record, ...patch };
+        return;
+      }
+    }
   }
 
   private flush(): void {

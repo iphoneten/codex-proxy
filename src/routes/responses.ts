@@ -57,6 +57,13 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function maskProxyApiKey(key: string | null | undefined): string {
+  if (!key) return "disabled";
+  if (key.length <= 4) return key;
+  if (key.length <= 8) return `${key.slice(0, 1)}***${key.slice(-1)}`;
+  return `${key.slice(0, 3)}***${key.slice(-2)}`;
+}
+
 function firstHeaderOrMetadata(
   c: Context,
   metadata: Record<string, string>,
@@ -306,8 +313,19 @@ function normalizePassthroughEventData(
     response.usage = {
       input_tokens: 0,
       output_tokens: 0,
+      total_tokens: 0,
       ...buildUsageDetails({}),
     };
+  }
+
+  if ((event === "response.completed" || event === "response.incomplete") && isRecord(response.usage)) {
+    const usage = { ...response.usage };
+    const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+    const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+    if (typeof usage.total_tokens !== "number") {
+      usage.total_tokens = inputTokens + outputTokens;
+    }
+    response.usage = usage;
   }
 
   if (event === "response.completed") {
@@ -781,6 +799,10 @@ function checkAuth(
 ): Response | null {
   if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
     c.status(401);
+    console.warn(
+      `[Responses] proxy key check failed: expected=${maskProxyApiKey(getConfig().server.proxy_api_key)} ` +
+      `provided=${maskProxyApiKey(c.req.header("Authorization")?.replace("Bearer ", ""))}`,
+    );
     return c.json({
       type: "error",
       error: {
@@ -797,6 +819,10 @@ function checkAuth(
     const providedKey = authHeader?.replace("Bearer ", "");
     if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
       c.status(401);
+      console.warn(
+        `[Responses] proxy key check failed: expected=${maskProxyApiKey(config.server.proxy_api_key)} ` +
+        `provided=${maskProxyApiKey(providedKey)}`,
+      );
       return c.json({
         type: "error",
         error: {
@@ -904,9 +930,14 @@ async function handleCompact(
     };
   }
 
+  const compactDirectCandidates = resolveDirectCandidatesSafe(upstreamRouter, rawModel);
   const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
-    if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
-      const directModel = compactRouteMatch.resolvedModel ?? rawModel;
+  const compactDirectRouteMatch = compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter";
+    if (compactDirectRouteMatch || compactDirectCandidates?.length) {
+      const directPrimary = compactDirectCandidates?.[0];
+      const directModel = compactDirectRouteMatch
+        ? (compactRouteMatch.resolvedModel ?? rawModel)
+        : (directPrimary!.resolvedModel ?? rawModel);
       const directReq = {
       codexRequest: {
         model: directModel,
@@ -926,9 +957,11 @@ async function handleCompact(
       };
       return handleDirectRequest({
         c,
-        upstream: compactRouteMatch.adapter,
-        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, rawModel),
-        upstreamEntry: compactRouteMatch.kind === "api-key" ? compactRouteMatch.entry : undefined,
+        upstream: compactDirectRouteMatch
+          ? compactRouteMatch.adapter
+          : directPrimary!.adapter,
+        upstreamCandidates: compactDirectCandidates,
+        upstreamEntry: compactRouteMatch?.kind === "api-key" ? compactRouteMatch.entry : undefined,
         req: directReq,
         fmt: PASSTHROUGH_FORMAT,
       });
@@ -1043,8 +1076,12 @@ export function createResponsesRoutes(
     if (body instanceof Response) return body;
 
     const rawModel = typeof body.model === "string" ? body.model : "codex";
+    const directCandidates = resolveDirectCandidatesSafe(upstreamRouter, rawModel);
     const routeMatch = upstreamRouter?.resolveMatch(rawModel);
-    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const isDirectRouteMatch = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const allowUnauthenticated =
+      !!directCandidates?.length ||
+      isDirectRouteMatch;
     const authErr = checkAuth(c, accountPool, allowUnauthenticated);
     if (authErr) return authErr;
 
@@ -1182,6 +1219,9 @@ export function createResponsesRoutes(
       tupleSchema,
       expectsImageGen,
     };
+    const canFallbackToAccountPool = accountPool.isAuthenticated();
+    const fallbackToAccountPool = () =>
+      handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
@@ -1197,16 +1237,22 @@ export function createResponsesRoutes(
       }),
     });
 
-    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
-      const directModel = routeMatch.resolvedModel ?? rawModel;
+    if (isDirectRouteMatch || directCandidates?.length) {
+      const directPrimary = directCandidates?.[0];
+      const directModel = isDirectRouteMatch
+        ? (routeMatch.resolvedModel ?? rawModel)
+        : (directPrimary!.resolvedModel ?? rawModel);
       const directReq = { ...proxyReq, model: directModel, codexRequest: { ...codexRequest, model: directModel } };
       return handleDirectRequest({
         c,
-        upstream: routeMatch.adapter,
-        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, rawModel),
-        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        upstream: isDirectRouteMatch
+          ? routeMatch.adapter
+          : directPrimary!.adapter,
+        upstreamCandidates: directCandidates,
+        upstreamEntry: routeMatch?.kind === "api-key" ? routeMatch.entry : undefined,
         req: directReq,
         fmt: PASSTHROUGH_FORMAT,
+        fallbackToAccountPool: canFallbackToAccountPool ? fallbackToAccountPool : undefined,
       });
     }
 

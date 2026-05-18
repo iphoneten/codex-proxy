@@ -58,7 +58,7 @@ function makeLogsState(overrides: Partial<ReturnType<typeof mockLogs.useLogs>> =
     setLogState: vi.fn(),
     selected: null,
     selectLog: vi.fn(),
-    direction: "all",
+    direction: "egress",
     setDirection: vi.fn(),
     search: "",
     setSearch: vi.fn(),
@@ -107,23 +107,7 @@ describe("LogsPage", () => {
     expect(nextPage).toHaveBeenCalledTimes(1);
   });
 
-  it("shows selected log details and clears to hint when nothing is selected", () => {
-    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
-
-    mockLogs.useLogs.mockReturnValue(makeLogsState({ selected: { id: "1", path: "/v1/messages" } }));
-    const { rerender } = renderLogsPage();
-    expect(screen.getByText(/"path": "\/v1\/messages"/)).toBeTruthy();
-
-    mockLogs.useLogs.mockReturnValue(makeLogsState({ selected: null }));
-    rerender(
-      <I18nProvider>
-        <LogsPage embedded />
-      </I18nProvider>,
-    );
-    expect(screen.getByText("Select a log to view details")).toBeTruthy();
-  });
-
-  it("renders zero latency as 0ms", () => {
+  it("renders zero latency as seconds", () => {
     mockLogs.useLogs.mockReturnValue(
       makeLogsState({
         records: [
@@ -144,7 +128,35 @@ describe("LogsPage", () => {
 
     renderLogsPage();
 
-    expect(screen.getByText("0ms")).toBeTruthy();
+    expect(screen.getByText("0.00 s")).toBeTruthy();
+  });
+
+  it("renders compute tokens with unit", () => {
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "1",
+            requestId: "r1",
+            direction: "egress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "POST",
+            path: "/v1/responses",
+            model: "gpt-5.4",
+            upstreamName: "codex",
+            inputTokens: 1200,
+            outputTokens: 300,
+            status: 200,
+            latencyMs: 1250,
+          },
+        ],
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(screen.getByText("1.5K tok")).toBeTruthy();
   });
 
   it("renders and toggles the logs mode button", () => {
@@ -166,10 +178,6 @@ describe("LogsPage", () => {
 
     const timeHeader = screen.getByText("Time");
     expect(hasAncestorClass(timeHeader, "overflow-x-auto")).toBe(true);
-    expect(hasAncestorClass(timeHeader, "min-w-[520px]")).toBe(true);
-
-    const detailsPanel = screen.getByText("Details").parentElement?.parentElement;
-    expect(detailsPanel?.className).toContain("w-full");
-    expect(detailsPanel?.className).toContain("lg:w-[360px]");
+    expect(hasAncestorClass(timeHeader, "min-w-[760px]")).toBe(true);
   });
 });

@@ -81,6 +81,13 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
   };
 }
 
+function maskProxyApiKey(key: string | null | undefined): string {
+  if (!key) return "disabled";
+  if (key.length <= 4) return key;
+  if (key.length <= 8) return `${key.slice(0, 1)}***${key.slice(-1)}`;
+  return `${key.slice(0, 3)}***${key.slice(-2)}`;
+}
+
 export function createMessagesRoutes(
   accountPool: AccountPool,
   cookieJar?: CookieJar,
@@ -109,12 +116,20 @@ export function createMessagesRoutes(
     }
     const req = parsed.data;
 
+    const directCandidates = resolveDirectCandidatesSafe(upstreamRouter, req.model);
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
-    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const isDirectRouteMatch = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const allowUnauthenticated =
+      !!directCandidates?.length ||
+      isDirectRouteMatch;
 
     // Auth check
     if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
       c.status(401);
+      console.warn(
+        `[Messages] proxy key check failed: expected=${maskProxyApiKey(getConfig().server.proxy_api_key)} ` +
+        `provided=${maskProxyApiKey(c.req.header("Authorization")?.replace("Bearer ", ""))}`,
+      );
       return c.json(
         makeError("authentication_error", "Not authenticated. Please login first at /"),
       );
@@ -130,6 +145,10 @@ export function createMessagesRoutes(
 
       if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
         c.status(401);
+        console.warn(
+          `[Messages] proxy key check failed: expected=${maskProxyApiKey(config.server.proxy_api_key)} ` +
+          `provided=${maskProxyApiKey(providedKey)}`,
+        );
         return c.json(makeError("authentication_error", "Invalid API key"));
       }
     }
@@ -154,6 +173,9 @@ export function createMessagesRoutes(
       clientConversationId: clientConversationId ?? undefined,
     };
     const fmt = makeAnthropicFormat(wantThinking);
+    const canFallbackToAccountPool = accountPool.isAuthenticated();
+    const fallbackToAccountPool = () =>
+      handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
@@ -169,8 +191,11 @@ export function createMessagesRoutes(
       }),
     });
 
-    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
-      const directModel = routeMatch.resolvedModel ?? req.model;
+    if (isDirectRouteMatch || directCandidates?.length) {
+      const directPrimary = directCandidates?.[0];
+      const directModel = isDirectRouteMatch
+        ? (routeMatch.resolvedModel ?? req.model)
+        : (directPrimary?.resolvedModel ?? req.model);
       const directReq = {
         ...proxyReq,
         model: directModel,
@@ -178,11 +203,14 @@ export function createMessagesRoutes(
       };
       return handleDirectRequest({
         c,
-        upstream: routeMatch.adapter,
-        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, req.model),
-        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        upstream: isDirectRouteMatch
+          ? routeMatch.adapter
+          : directPrimary!.adapter,
+        upstreamCandidates: directCandidates,
+        upstreamEntry: routeMatch?.kind === "api-key" ? routeMatch.entry : undefined,
         req: directReq,
         fmt,
+        fallbackToAccountPool: canFallbackToAccountPool ? fallbackToAccountPool : undefined,
       });
     }
 

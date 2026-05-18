@@ -6,11 +6,12 @@
  */
 
 import { isNativeAvailable } from "./native-transport.js";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 
 export interface TlsTransportResponse {
   status: number;
   headers: Headers;
-  body: ReadableStream<Uint8Array>;
+  body: NodeReadableStream<Uint8Array>;
   setCookieHeaders: string[];
 }
 

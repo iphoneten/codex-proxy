@@ -19,6 +19,53 @@ import { canReturnStreamError, streamErrorResponse } from "./stream-error-respon
 import { buildDirectUpstreamStatsTarget, recordDirectUpstreamUsage } from "./direct-upstream-usage.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import { isModelNotSupportedError } from "../../proxy/error-classification.js";
+import { enrichEgressLogUsage } from "./log-usage-enrichment.js";
+import { isCloudflareChallengeResponse } from "../../tls/direct-fallback.js";
+import { getConfig } from "../../config.js";
+
+function resolveUpstreamName(
+  entry: { label?: string | null; models?: string[] } | undefined,
+  fallback: string,
+): string {
+  return entry?.label?.trim() || entry?.models?.[0] || fallback;
+}
+
+function createAttemptTimeoutError(timeoutMs: number, upstreamTag: string, model: string): Error {
+  const err = new Error(
+    `Direct upstream request timed out after ${timeoutMs}ms (upstream=${upstreamTag}, model=${model})`,
+  );
+  err.name = "DirectUpstreamTimeoutError";
+  return err;
+}
+
+async function createResponseWithTimeout(options: {
+  upstream: UpstreamAdapter;
+  request: HandleDirectRequestOptions["req"]["codexRequest"];
+  signal: AbortSignal;
+  timeoutMs: number;
+}): Promise<Response> {
+  const { upstream, request, signal, timeoutMs } = options;
+  const timeoutController = new AbortController();
+  const onAbort = () => timeoutController.abort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => {
+    timeoutController.abort(createAttemptTimeoutError(timeoutMs, upstream.tag, request.model));
+  }, timeoutMs);
+
+  try {
+    return await upstream.createResponse(request, timeoutController.signal);
+  } catch (error) {
+    if (timeoutController.signal.aborted && !signal.aborted) {
+      throw timeoutController.signal.reason instanceof Error
+        ? timeoutController.signal.reason
+        : createAttemptTimeoutError(timeoutMs, upstream.tag, request.model);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 export async function handleDirectRequest(options: HandleDirectRequestOptions): Promise<Response> {
   const { c, upstream, req, fmt } = options;
@@ -28,6 +75,10 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
   const statsTarget = buildDirectUpstreamStatsTarget(
     upstream.tag,
     options.upstreamEntry ?? upstreamCandidates[0]?.entry,
+  );
+  const upstreamName = resolveUpstreamName(
+    options.upstreamEntry ?? upstreamCandidates[0]?.entry,
+    upstream.tag,
   );
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
@@ -45,6 +96,9 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     rawResponse = directResult.response;
     activeUpstream = directResult.upstream;
   } catch (err) {
+    if (options.fallbackToAccountPool) {
+      return options.fallbackToAccountPool(err);
+    }
     const msg = err instanceof Error ? err.message : "Upstream request failed";
     const status = err instanceof CodexApiError ? err.status : 502;
     enqueueLogEntry({
@@ -54,6 +108,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
       path: "/v1/responses",
       model: req.model,
       provider: activeUpstream.tag,
+      upstreamName,
       status,
       latencyMs: 0,
       stream: req.isStreaming,
@@ -127,6 +182,13 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
         },
       });
       if (usageInfo) {
+        enrichEgressLogUsage({
+          requestId,
+          model: req.model,
+          provider: activeUpstream.tag,
+          upstreamName,
+          usage: usageInfo,
+        });
         recordDirectUpstreamUsage(statsTarget, usageInfo);
       }
     });
@@ -138,6 +200,13 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
       response: rawResponse,
       model: req.model,
       tupleSchema: req.tupleSchema,
+    });
+    enrichEgressLogUsage({
+      requestId,
+      model: req.model,
+      provider: activeUpstream.tag,
+      upstreamName,
+      usage: result.usage,
     });
     recordDirectUpstreamUsage(statsTarget, result.usage);
     return c.json(result.response);
@@ -158,6 +227,7 @@ async function createDirectUpstreamResponse(options: {
 }): Promise<{ response: Response; upstream: UpstreamAdapter }> {
   const { candidates, request, signal, requestId } = options;
   let lastError: unknown;
+  const timeoutMs = Math.max(1_000, getConfig().api.timeout_seconds * 1000);
 
   for (const candidate of candidates) {
     const resolvedModel = candidate.resolvedModel?.trim() || request.codexRequest.model;
@@ -167,62 +237,76 @@ async function createDirectUpstreamResponse(options: {
     const maxRetries = candidate.entry?.maxRetries ?? 0;
     const modelFallbacks = buildModelFallbacks(candidate.entry, resolvedModel);
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const fallbackModel = modelFallbacks[attempt];
-      const effectiveRequest = fallbackModel && fallbackModel !== candidateRequest.model
+    candidateAttempt:
+    for (let modelIndex = 0; modelIndex < modelFallbacks.length; modelIndex++) {
+      const fallbackModel = modelFallbacks[modelIndex];
+      const effectiveRequest = fallbackModel !== candidateRequest.model
         ? { ...candidateRequest, model: fallbackModel }
         : candidateRequest;
-      const startMs = Date.now();
-      try {
-        const response = await candidate.adapter.createResponse(effectiveRequest, signal);
-        enqueueLogEntry({
-          requestId,
-          direction: "egress",
-          method: "POST",
-          path: "/v1/responses",
-          model: request.model,
-          provider: candidate.adapter.tag,
-          status: response.status,
-          latencyMs: Date.now() - startMs,
-          stream: request.isStreaming,
-          request: {
-            model: effectiveRequest.model,
-            stream: request.codexRequest.stream,
-          },
-        });
-        return { response, upstream: candidate.adapter };
-      } catch (error) {
-        lastError = error;
-        const retryable = isRetryableDirectUpstreamError(error);
-        enqueueLogEntry({
-          requestId,
-          direction: "egress",
-          method: "POST",
-          path: "/v1/responses",
-          model: request.model,
-          provider: candidate.adapter.tag,
-          status: error instanceof CodexApiError ? error.status : 502,
-          latencyMs: Date.now() - startMs,
-          stream: request.isStreaming,
-          error: error instanceof Error ? error.message : String(error),
-          request: {
-            model: effectiveRequest.model,
-            stream: request.codexRequest.stream,
-          },
-        });
-        if (error instanceof CodexApiError && isModelNotSupportedError(error) && fallbackModel) {
-          if (attempt >= modelFallbacks.length - 1) throw error;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const startMs = Date.now();
+        try {
+          const response = await createResponseWithTimeout({
+            upstream: candidate.adapter,
+            request: effectiveRequest,
+            signal,
+            timeoutMs,
+          });
+          enqueueLogEntry({
+            requestId,
+            direction: "egress",
+            method: "POST",
+            path: "/v1/responses",
+            model: request.model,
+            provider: candidate.adapter.tag,
+            upstreamName: resolveUpstreamName(candidate.entry, candidate.adapter.tag),
+            status: response.status,
+            latencyMs: Date.now() - startMs,
+            stream: request.isStreaming,
+            request: {
+              model: effectiveRequest.model,
+              stream: request.codexRequest.stream,
+            },
+          });
+          return { response, upstream: candidate.adapter };
+        } catch (error) {
+          lastError = error;
+          const retryable = isRetryableDirectUpstreamError(error);
+          enqueueLogEntry({
+            requestId,
+            direction: "egress",
+            method: "POST",
+            path: "/v1/responses",
+            model: request.model,
+            provider: candidate.adapter.tag,
+            upstreamName: resolveUpstreamName(candidate.entry, candidate.adapter.tag),
+            status: error instanceof CodexApiError ? error.status : 502,
+            latencyMs: Date.now() - startMs,
+            stream: request.isStreaming,
+            error: error instanceof Error ? error.message : String(error),
+            request: {
+              model: effectiveRequest.model,
+              stream: request.codexRequest.stream,
+            },
+          });
+
+          const hasNextFallbackModel = modelIndex < modelFallbacks.length - 1;
+          if (error instanceof CodexApiError && isModelNotSupportedError(error)) {
+            if (!hasNextFallbackModel) break candidateAttempt;
+            console.warn(
+              `[Direct] Upstream ${candidate.adapter.tag} model fallback ${modelIndex + 1}/${modelFallbacks.length - 1} ` +
+              `for requested=${request.model} from=${effectiveRequest.model} to=${modelFallbacks[modelIndex + 1]}`,
+            );
+            break;
+          }
+
+          if (!retryable) throw error;
+          if (attempt >= maxRetries) break candidateAttempt;
           console.warn(
-            `[Direct] Upstream ${candidate.adapter.tag} model fallback ${attempt + 1}/${modelFallbacks.length - 1} ` +
-            `for requested=${request.model} from=${effectiveRequest.model} to=${modelFallbacks[attempt + 1]}`,
+            `[Direct] Upstream ${candidate.adapter.tag} retry ${attempt + 1}/${maxRetries} for model=${request.model}`,
           );
-          continue;
         }
-        if (!retryable) throw error;
-        if (attempt >= maxRetries) break;
-        console.warn(
-          `[Direct] Upstream ${candidate.adapter.tag} retry ${attempt + 1}/${maxRetries} for model=${request.model}`,
-        );
       }
     }
   }
@@ -232,7 +316,9 @@ async function createDirectUpstreamResponse(options: {
 
 function isRetryableDirectUpstreamError(error: unknown): boolean {
   if (!(error instanceof Error)) return true;
+  if (error.name === "DirectUpstreamTimeoutError") return true;
   if (!(error instanceof CodexApiError)) return true;
+  if (isCloudflareChallengeResponse(error.status, error.body)) return true;
   return error.status === 408 || error.status === 409 || error.status === 429 || error.status >= 500;
 }
 

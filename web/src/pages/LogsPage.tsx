@@ -11,6 +11,18 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const gs = useGeneralSettings(settings.apiKey);
   const logsLlmOnly = gs.data?.logs_llm_only ?? true;
 
+  const formatTokenValue = (value: number | null): string => {
+    if (value == null) return "-";
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tok`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K tok`;
+    return `${value} tok`;
+  };
+
+  const formatLatencySeconds = (value: number | null | undefined): string => {
+    if (value == null) return "-";
+    return `${(value / 1000).toFixed(2)} s`;
+  };
+
   const toggleLogsMode = async () => {
     await gs.save({ logs_llm_only: !logsLlmOnly });
   };
@@ -19,6 +31,12 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
     return logs.records.map((r) => ({
       ...r,
       time: new Date(r.ts).toLocaleTimeString(),
+      computeTokens:
+        r.direction === "egress" &&
+        typeof r.inputTokens === "number" &&
+        typeof r.outputTokens === "number"
+          ? r.inputTokens + r.outputTokens
+          : null,
     }));
   }, [logs.records]);
 
@@ -49,18 +67,6 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
           {logs.state?.paused ? t("logsPaused") : t("logsRunning")}
         </button>
 
-        <div class="flex items-center gap-1.5">
-          {(["all", "ingress", "egress"] as const).map((dir) => (
-            <button
-              key={dir}
-              class={`px-2.5 py-1 rounded-md text-xs font-medium ${logs.direction === dir ? "bg-primary-action text-white" : "bg-slate-200 text-slate-600"}`}
-              onClick={() => logs.setDirection(dir)}
-            >
-              {t(`logsFilter.${dir}`)}
-            </button>
-          ))}
-        </div>
-
         <button
           class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-200 text-slate-700 hover:bg-slate-300"
           onClick={toggleLogsMode}
@@ -81,72 +87,68 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
         </div>
       </div>
 
-      <div class="flex flex-col lg:flex-row gap-4 min-w-0">
-        <div class="flex-1 min-w-0">
-          <div class="border border-slate-200 dark:border-border-dark rounded-lg overflow-hidden bg-white dark:bg-bg-dark">
-            <div class="overflow-x-auto">
-              <div class="min-w-[520px]">
-                <div class="grid grid-cols-12 text-xs text-slate-500 px-3 py-2 border-b border-slate-200 dark:border-border-dark">
-                  <div class="col-span-2">{t("logsTime")}</div>
-                  <div class="col-span-2">{t("logsDirection")}</div>
-                  <div class="col-span-4">{t("logsPath")}</div>
-                  <div class="col-span-2">{t("logsStatus")}</div>
-                  <div class="col-span-2">{t("logsLatency")}</div>
-                </div>
-                {logs.loading && (
-                  <div class="p-4 text-xs text-slate-500">{t("logsLoading")}</div>
-                )}
-                {!logs.loading && list.length === 0 && (
-                  <div class="p-4 text-xs text-slate-500">{t("logsEmpty")}</div>
-                )}
-                <div class="max-h-[420px] overflow-y-auto">
-                  {list.map((row) => (
-                    <button
-                      key={row.id}
-                      class={`w-full text-left grid grid-cols-12 px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark ${logs.selected?.id === row.id ? "bg-primary/5" : ""}`}
-                      onClick={() => logs.selectLog(row.id)}
-                    >
-                      <div class="col-span-2 text-slate-500">{row.time}</div>
-                      <div class="col-span-2">
-                        <span class={`px-1.5 py-0.5 rounded ${row.direction === "ingress" ? "bg-success-container text-success" : "bg-info-container text-info"}`}>
-                          {t(`logsFilter.${row.direction}`)}
-                        </span>
-                      </div>
-                      <div class="col-span-4 truncate">{row.path}</div>
-                      <div class="col-span-2">{row.status ?? "-"}</div>
-                      <div class="col-span-2">{row.latencyMs != null ? `${row.latencyMs}ms` : "-"}</div>
-                    </button>
-                  ))}
-                </div>
-                <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500">
-                  <button
-                    class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
-                    disabled={!logs.hasPrev}
-                    onClick={logs.prevPage}
-                  >
-                    {t("logsPrev")}
-                  </button>
-                  <span>{t("logsPageSummary", { total: logs.total, range: pageInfo })}</span>
-                  <button
-                    class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
-                    disabled={!logs.hasNext}
-                    onClick={logs.nextPage}
-                  >
-                    {t("logsNext")}
-                  </button>
-                </div>
+      <div class="min-w-0">
+        <div class="border border-slate-200 dark:border-border-dark rounded-lg overflow-hidden bg-white dark:bg-bg-dark">
+          <div class="overflow-x-auto">
+            <div class="min-w-[760px]">
+              <div class="grid grid-cols-[72px_76px_1.6fr_1.3fr_1.3fr_96px_96px_88px_84px_96px] text-xs text-slate-500 px-3 py-2 border-b border-slate-200 dark:border-border-dark gap-2">
+                <div class="col-span-1">{t("logsTime")}</div>
+                <div class="col-span-1">{t("logsDirection")}</div>
+                <div>{t("logsPath")}</div>
+                <div>{t("logsModel")}</div>
+                <div>{t("logsProvider")}</div>
+                <div class="col-span-1">{t("logsInputTokens")}</div>
+                <div class="col-span-1">{t("logsOutputTokens")}</div>
+                <div class="col-span-1">{t("logsCompute")}</div>
+                <div class="col-span-1">{t("logsStatus")}</div>
+                <div class="col-span-1">{t("logsLatency")}</div>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="w-full lg:w-[360px] shrink-0">
-          <div class="border border-slate-200 dark:border-border-dark rounded-lg bg-white dark:bg-bg-dark h-full">
-            <div class="px-3 py-2 text-xs text-slate-500 border-b border-slate-200 dark:border-border-dark">
-              {t("logsDetails")}
-            </div>
-            <div class="p-3 text-xs whitespace-pre-wrap max-h-[460px] overflow-auto">
-              {logs.selected ? JSON.stringify(logs.selected, null, 2) : t("logsSelectHint")}
+              {logs.loading && (
+                <div class="p-4 text-xs text-slate-500">{t("logsLoading")}</div>
+              )}
+              {!logs.loading && list.length === 0 && (
+                <div class="p-4 text-xs text-slate-500">{t("logsEmpty")}</div>
+              )}
+              <div class="max-h-[420px] overflow-y-auto">
+                {list.map((row) => (
+                  <div
+                    key={row.id}
+                    class="grid grid-cols-[72px_76px_1.6fr_1.3fr_1.3fr_96px_96px_88px_84px_96px] px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark gap-2"
+                  >
+                    <div class="col-span-1 text-slate-500">{row.time}</div>
+                    <div class="col-span-1">
+                      <span class={`px-1.5 py-0.5 rounded ${row.direction === "ingress" ? "bg-success-container text-success" : "bg-info-container text-info"}`}>
+                        {t(`logsFilter.${row.direction}`)}
+                      </span>
+                    </div>
+                    <div class="truncate">{row.path}</div>
+                    <div class="truncate">{row.model ?? "-"}</div>
+                    <div class="truncate">{row.upstreamName ?? row.provider ?? "-"}</div>
+                    <div class="col-span-1">{row.inputTokens != null ? row.inputTokens : "-"}</div>
+                    <div class="col-span-1">{row.outputTokens != null ? row.outputTokens : "-"}</div>
+                    <div class="col-span-1">{formatTokenValue(row.computeTokens)}</div>
+                    <div class="col-span-1">{row.status ?? "-"}</div>
+                    <div class="col-span-1">{formatLatencySeconds(row.latencyMs)}</div>
+                  </div>
+                ))}
+              </div>
+              <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500">
+                <button
+                  class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
+                  disabled={!logs.hasPrev}
+                  onClick={logs.prevPage}
+                >
+                  {t("logsPrev")}
+                </button>
+                <span>{t("logsPageSummary", { total: logs.total, range: pageInfo })}</span>
+                <button
+                  class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
+                  disabled={!logs.hasNext}
+                  onClick={logs.nextPage}
+                >
+                  {t("logsNext")}
+                </button>
+              </div>
             </div>
           </div>
         </div>

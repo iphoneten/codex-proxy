@@ -11,6 +11,7 @@ import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
 import { streamResponse } from "./response-processor.js";
 import { createResponseMetadataCollector } from "./response-metadata-collector.js";
 import { logProxyUsage } from "./proxy-usage-log.js";
+import { enrichEgressLogUsage } from "./log-usage-enrichment.js";
 
 export interface HandleStreamingOptions {
   c: Context;
@@ -128,6 +129,12 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
       abortController.abort();
       recordStreamAffinity();
       if (usageInfo) {
+        enrichEgressLogUsage({
+          requestId,
+          model: req.model,
+          provider: "codex",
+          usage: usageInfo,
+        });
         logProxyUsage({
           tag: fmt.tag,
           entryId: capturedEntryId,

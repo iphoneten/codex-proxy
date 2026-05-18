@@ -32,6 +32,52 @@ interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function normalizeOpenAITool(tool: unknown): unknown {
+  if (!isRecord(tool)) return tool;
+
+  const type = tool.type;
+  const existingFunction = optionalRecord(tool.function);
+  if (type !== "function" && type !== "custom") return tool;
+  if (existingFunction) return tool;
+
+  const name = optionalString(tool.name);
+  if (!name) return tool;
+
+  const fn: Record<string, unknown> = { name };
+  const description = optionalString(tool.description);
+  const parameters =
+    optionalRecord(tool.parameters) ??
+    optionalRecord(tool.input_schema) ??
+    optionalRecord(tool.schema);
+
+  if (description) fn.description = description;
+  if (parameters) fn.parameters = parameters;
+  if (typeof tool.strict === "boolean") fn.strict = tool.strict;
+
+  return { type: "function", function: fn };
+}
+
+function normalizeToolChoice(choice: unknown): unknown {
+  if (!isRecord(choice)) return choice;
+  if ((choice.type === "function" || choice.type === "custom") && !isRecord(choice.function)) {
+    const name = optionalString(choice.name);
+    if (name) return { type: "function", function: { name } };
+  }
+  return choice;
+}
+
 /** Outgoing OpenAI chat completions request body. */
 export interface OpenAIChatRequest {
   model: string;
@@ -124,10 +170,10 @@ export function translateCodexToOpenAIRequest(
 
   // Tools
   if (req.tools?.length) {
-    body.tools = req.tools;
-    if (req.tool_choice !== undefined) {
-      body.tool_choice = req.tool_choice;
-    }
+    body.tools = req.tools.map((tool) => normalizeOpenAITool(tool));
+  }
+  if (req.tool_choice !== undefined) {
+    body.tool_choice = normalizeToolChoice(req.tool_choice);
   }
 
   // Response format (JSON mode / structured outputs)

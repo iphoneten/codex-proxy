@@ -87,6 +87,13 @@ const GEMINI_FORMAT: FormatAdapter = {
     collectCodexToGeminiResponse(api, response, model, tupleSchema),
 };
 
+function maskProxyApiKey(key: string | null | undefined): string {
+  if (!key) return "disabled";
+  if (key.length <= 4) return key;
+  if (key.length <= 8) return `${key.slice(0, 1)}***${key.slice(-1)}`;
+  return `${key.slice(0, 3)}***${key.slice(-2)}`;
+}
+
 export function createGeminiRoutes(
   accountPool: AccountPool,
   cookieJar?: CookieJar,
@@ -136,12 +143,20 @@ export function createGeminiRoutes(
     }
     const req = validationResult.data;
 
+    const directCandidates = resolveDirectCandidatesSafe(upstreamRouter, geminiModel);
     const routeMatch = upstreamRouter?.resolveMatch(geminiModel);
-    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const isDirectRouteMatch = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const allowUnauthenticated =
+      !!directCandidates?.length ||
+      isDirectRouteMatch;
 
     // Auth check
     if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
       c.status(401);
+      console.warn(
+        `[Gemini] proxy key check failed: expected=${maskProxyApiKey(getConfig().server.proxy_api_key)} ` +
+        `provided=${maskProxyApiKey(c.req.header("Authorization")?.replace("Bearer ", ""))}`,
+      );
       return c.json(
         makeError(401, "Not authenticated. Please login first at /"),
       );
@@ -158,6 +173,10 @@ export function createGeminiRoutes(
 
       if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
         c.status(401);
+        console.warn(
+          `[Gemini] proxy key check failed: expected=${maskProxyApiKey(config.server.proxy_api_key)} ` +
+          `provided=${maskProxyApiKey(providedKey)}`,
+        );
         return c.json(makeError(401, "Invalid API key"));
       }
     }
@@ -178,9 +197,15 @@ export function createGeminiRoutes(
       clientConversationId: c.req.header("x-conversation-id") || c.req.header("x-session-id"),
       tupleSchema,
     };
+    const canFallbackToAccountPool = accountPool.isAuthenticated();
+    const fallbackToAccountPool = () =>
+      handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: GEMINI_FORMAT, proxyPool });
 
-    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
-      const directModel = routeMatch.resolvedModel ?? geminiModel;
+    if (isDirectRouteMatch || directCandidates?.length) {
+      const directPrimary = directCandidates?.[0];
+      const directModel = isDirectRouteMatch
+        ? (routeMatch.resolvedModel ?? geminiModel)
+        : (directPrimary!.resolvedModel ?? geminiModel);
       const directReq = {
         ...proxyReq,
         model: directModel,
@@ -188,11 +213,14 @@ export function createGeminiRoutes(
       };
       return handleDirectRequest({
         c,
-        upstream: routeMatch.adapter,
-        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, geminiModel),
-        upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
+        upstream: isDirectRouteMatch
+          ? routeMatch.adapter
+          : directPrimary!.adapter,
+        upstreamCandidates: directCandidates,
+        upstreamEntry: routeMatch?.kind === "api-key" ? routeMatch.entry : undefined,
         req: directReq,
         fmt: GEMINI_FORMAT,
+        fallbackToAccountPool: canFallbackToAccountPool ? fallbackToAccountPool : undefined,
       });
     }
 

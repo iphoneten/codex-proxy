@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockConfig = {
-  server: { port: 8080, proxy_api_key: null as string | null },
+  server: { port: 8090, proxy_api_key: null as string | null },
   tls: { proxy_url: null as string | null, force_http11: false },
   model: {
     default: "gpt-5.4",
@@ -121,7 +121,7 @@ describe("GET /admin/general-settings", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toMatchObject({
-      port: 8080,
+      port: 8090,
       proxy_url: null,
       force_http11: false,
       default_model: "gpt-5.4",

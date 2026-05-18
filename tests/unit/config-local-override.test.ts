@@ -60,7 +60,7 @@ auth:
   oauth_token_endpoint: https://example.com
 server:
   host: "::"
-  port: 8080
+  port: 8090
   proxy_api_key: null
 session:
   ttl_minutes: 60

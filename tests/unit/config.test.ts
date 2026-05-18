@@ -51,7 +51,7 @@ auth:
   oauth_token_endpoint: "https://auth.openai.com/oauth/token"
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 8090
   proxy_api_key: null
 session:
   ttl_minutes: 60
@@ -91,7 +91,7 @@ describe("config", () => {
     const { loadConfig } = await import("@src/config.js");
     const config = loadConfig("/tmp/test-config");
     expect(config.api.base_url).toBe("https://chatgpt.com/backend-api");
-    expect(config.server.port).toBe(8080);
+    expect(config.server.port).toBe(8090);
     expect(config.model.default).toBe("gpt-5.4");
     expect(config.usage_stats.snapshot_interval_minutes).toBe(5);
     expect(config.usage_stats.history_retention_days).toBeNull();

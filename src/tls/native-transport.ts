@@ -10,6 +10,7 @@
 
 import { resolve } from "path";
 import { existsSync } from "fs";
+import { ReadableStream, type ReadableStreamDefaultController } from "node:stream/web";
 import type { TlsTransport, TlsTransportResponse } from "./transport.js";
 import { getProxyUrl } from "./proxy.js";
 import { getConfig } from "../config.js";

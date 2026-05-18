@@ -190,6 +190,31 @@ describe("POST /v1/responses/compact", () => {
     expect(capturedCompactRequest).toBeNull();
   });
 
+  it("prefers direct upstream compact routing when direct candidates exist for a codex fallback model", async () => {
+    const upstreamRouter = {
+      resolveMatch: vi.fn(() => ({ kind: "codex", adapter: { tag: "codex" } })),
+      resolveDirectCandidates: vi.fn(() => [{ adapter: { tag: "custom-upstream" }, resolvedModel: "gpt-5.4" }]),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+
+    const res = await app.request("/v1/responses/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex",
+        input: [{ role: "user", content: "Hello" }],
+        instructions: "You are helpful",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockHandleDirectRequest).toHaveBeenCalledTimes(1);
+    const directReq = mockHandleDirectRequest.mock.calls[0][0].req as Record<string, unknown>;
+    expect(directReq.model).toBe("gpt-5.4");
+    expect((directReq.codexRequest as Record<string, unknown>).model).toBe("gpt-5.4");
+    expect(capturedCompactRequest).toBeNull();
+  });
+
   it("sends correct CompactRequest format (no stream/store)", async () => {
     await app.request("/v1/responses/compact", {
       method: "POST",

@@ -92,6 +92,13 @@ function formatModelNotFound(model: string) {
   };
 }
 
+function maskProxyApiKey(key: string | null | undefined): string {
+  if (!key) return "disabled";
+  if (key.length <= 4) return key;
+  if (key.length <= 8) return `${key.slice(0, 1)}***${key.slice(-1)}`;
+  return `${key.slice(0, 3)}***${key.slice(-2)}`;
+}
+
 export function createChatRoutes(
   accountPool: AccountPool,
   cookieJar?: CookieJar,
@@ -129,11 +136,15 @@ export function createChatRoutes(
       });
     }
     const req = parsed.data;
+    const directCandidates = resolveDirectCandidatesSafe(upstreamRouter, req.model);
     const routeMatch = upstreamRouter?.resolveMatch(req.model) ?? (isRecognizedModelName(req.model)
       ? { kind: "codex" as const }
       : { kind: "not-found" as const });
 
-    if (routeMatch.kind === "not-found") {
+    const isDirectRouteMatch = routeMatch.kind === "api-key" || routeMatch.kind === "adapter";
+    const shouldUseDirectUpstream = isDirectRouteMatch || !!directCandidates?.length;
+
+    if (routeMatch.kind === "not-found" && !shouldUseDirectUpstream) {
       c.status(404);
       return c.json(formatModelNotFound(req.model));
     }
@@ -149,6 +160,13 @@ export function createChatRoutes(
       clientConversationId: req.user,
       tupleSchema,
     };
+    const fallbackConfig = getConfig();
+    const fallbackProvidedKey = c.req.header("Authorization")?.replace("Bearer ", "");
+    const canFallbackToAccountPool =
+      accountPool.isAuthenticated() &&
+      (!fallbackConfig.server.proxy_api_key || accountPool.validateProxyApiKey(fallbackProvidedKey ?? ""));
+    const fallbackToAccountPool = () =>
+      handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
@@ -164,8 +182,11 @@ export function createChatRoutes(
       }),
     });
 
-    if (routeMatch.kind === "api-key" || routeMatch.kind === "adapter") {
-      const directModel = routeMatch.resolvedModel ?? req.model;
+    if (shouldUseDirectUpstream) {
+      const directPrimary = directCandidates?.[0];
+      const directModel = isDirectRouteMatch
+        ? (routeMatch.resolvedModel ?? req.model)
+        : (directPrimary?.resolvedModel ?? req.model);
       const directReq = {
         ...proxyReq,
         model: directModel,
@@ -173,17 +194,24 @@ export function createChatRoutes(
       };
       return handleDirectRequest({
         c,
-        upstream: routeMatch.adapter,
-        upstreamCandidates: resolveDirectCandidatesSafe(upstreamRouter, req.model),
+        upstream: isDirectRouteMatch
+          ? routeMatch.adapter
+          : directPrimary!.adapter,
+        upstreamCandidates: directCandidates,
         upstreamEntry: routeMatch.kind === "api-key" ? routeMatch.entry : undefined,
         req: directReq,
         fmt,
+        fallbackToAccountPool: canFallbackToAccountPool ? fallbackToAccountPool : undefined,
       });
     }
 
     // Auth check for Codex route only
     if (!accountPool.isAuthenticated()) {
       c.status(401);
+      console.warn(
+        `[Chat] proxy key check failed: expected=${maskProxyApiKey(getConfig().server.proxy_api_key)} ` +
+        `provided=${maskProxyApiKey(c.req.header("Authorization")?.replace("Bearer ", ""))}`,
+      );
       return c.json({
         error: {
           message: "Not authenticated. Please login first at /",
@@ -205,6 +233,10 @@ export function createChatRoutes(
       const providedKey = authHeader?.replace("Bearer ", "");
       if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
         c.status(401);
+        console.warn(
+          `[Chat] proxy key check failed: expected=${maskProxyApiKey(config.server.proxy_api_key)} ` +
+          `provided=${maskProxyApiKey(providedKey)}`,
+        );
         return c.json({
           error: {
             message: "Invalid proxy API key",

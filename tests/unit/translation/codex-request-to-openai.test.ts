@@ -108,6 +108,51 @@ describe("translateCodexToOpenAIRequest", () => {
     expect(result.tool_choice).toBe("auto");
   });
 
+  it("normalizes flat function and custom tools for OpenAI upstreams", () => {
+    const req = makeBaseRequest({
+      input: [{ role: "user", content: "use tool" }],
+      tools: [
+        {
+          type: "function",
+          name: "edit_file",
+          description: "Edit a file",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+          strict: true,
+        },
+        {
+          type: "custom",
+          name: "apply_patch",
+          description: "Apply a patch",
+        },
+      ],
+      tool_choice: { type: "custom", name: "apply_patch" },
+    });
+
+    const result = translateCodexToOpenAIRequest(req, "gpt-4o", false);
+    expect(result.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "edit_file",
+          description: "Edit a file",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+          strict: true,
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description: "Apply a patch",
+        },
+      },
+    ]);
+    expect(result.tool_choice).toEqual({
+      type: "function",
+      function: { name: "apply_patch" },
+    });
+  });
+
   it("maps text.format to response_format", () => {
     const req = makeBaseRequest({
       input: [{ role: "user", content: "json" }],

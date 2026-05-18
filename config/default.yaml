@@ -28,7 +28,7 @@ auth:
   oauth_token_endpoint: https://auth.openai.com/oauth/token
 server:
   host: "::"
-  port: 8080
+  port: 8090
   proxy_api_key: null
   trust_proxy: false
 logs:
@@ -58,7 +58,7 @@ quota:
       - 90
   skip_exhausted: true
 update:
-  auto_update: true
+  auto_update: false
   show_update_dialog: false
 ollama:
   enabled: false

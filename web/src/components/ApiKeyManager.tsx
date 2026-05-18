@@ -3,7 +3,7 @@
  * Supports add/delete/toggle/import/export with predefined model catalogs.
  */
 
-import { useState, useCallback, useMemo, useRef } from "preact/hooks";
+import { useState, useCallback, useMemo, useRef, useEffect } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import type { ApiKeyProvider, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
 import { useUsageSummary, type UsageSummary } from "../../../shared/hooks/use-usage-stats";
@@ -223,7 +223,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     const normalizedApiKey = apiKey.trim();
     const normalizedBaseUrl = baseUrl.trim();
     const normalizedManualModels = normalizeCustomModelInput(manualModelsInput);
-  const models = isCustom && customModelStatus === "fallback"
+    const models = isCustom && customModelStatus === "fallback"
       ? normalizedManualModels
       : selectedModels;
 
@@ -290,7 +290,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
         </div>
 
         <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
           <input
             type="password"
             value={apiKey}
@@ -331,7 +331,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
 
       {isCustom && (
         <div class="flex flex-col gap-1">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
           <input
             type="url"
             value={baseUrl}
@@ -410,8 +410,8 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   usageLoading: boolean;
   onDelete: (id: string) => void;
   onToggle: (id: string, status: "active" | "disabled") => void;
-  onUpdateRouting: (id: string, routing: { priority?: number; maxRetries?: number }) => void;
-  onUpdateBaseUrl: (id: string, baseUrl: string) => void;
+  onUpdateRouting: (id: string, routing: { priority?: number; maxRetries?: number }) => Promise<void>;
+  onUpdateBaseUrl: (id: string, baseUrl: string) => Promise<void>;
   onRevealApiKey: (id: string) => Promise<{ ok: true; apiKey: string } | { ok: false; error: string }>;
   onRefreshModels: (id: string) => Promise<{ ok: true; models: string[] } | { ok: false; error: string }>;
   onAddModels: (id: string, models: string[]) => Promise<{ ok: boolean; error?: string }>;
@@ -431,9 +431,83 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedAvailableModels, setSelectedAvailableModels] = useState<string[]>([]);
   const [usageExpanded, setUsageExpanded] = useState(false);
+  const baseUrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const priorityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxRetriesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayName = entry.label?.trim() || entry.provider;
   const mainModels = entry.models.length > 0 ? entry.models : entry.model ? [entry.model] : [];
   const apiKeyValue = showApiKey ? apiKey : (entry.apiKeyMasked || "******");
+  const normalizedPriority = Number.parseInt(priority, 10) || 0;
+  const normalizedMaxRetries = Math.max(0, Number.parseInt(maxRetries, 10) || 0);
+
+  useEffect(() => {
+    setBaseUrl(entry.baseUrl);
+  }, [entry.baseUrl]);
+
+  useEffect(() => {
+    setPriority(String(entry.priority));
+  }, [entry.priority]);
+
+  useEffect(() => {
+    setMaxRetries(String(entry.maxRetries));
+  }, [entry.maxRetries]);
+
+  useEffect(() => () => {
+    if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
+    if (priorityTimerRef.current) clearTimeout(priorityTimerRef.current);
+    if (maxRetriesTimerRef.current) clearTimeout(maxRetriesTimerRef.current);
+  }, []);
+
+  const persistBaseUrl = useCallback(() => {
+    const next = baseUrl.trim();
+    const current = entry.baseUrl.trim();
+    if (next === current) return;
+    void onUpdateBaseUrl(entry.id, next);
+  }, [baseUrl, entry.baseUrl, entry.id, onUpdateBaseUrl]);
+
+  const persistPriority = useCallback(() => {
+    if (normalizedPriority === entry.priority) return;
+    void onUpdateRouting(entry.id, { priority: normalizedPriority });
+  }, [entry.id, entry.priority, normalizedPriority, onUpdateRouting]);
+
+  const persistMaxRetries = useCallback(() => {
+    if (normalizedMaxRetries === entry.maxRetries) return;
+    void onUpdateRouting(entry.id, { maxRetries: normalizedMaxRetries });
+  }, [entry.id, entry.maxRetries, normalizedMaxRetries, onUpdateRouting]);
+
+  const scheduleBaseUrlPersist = useCallback((value: string) => {
+    setBaseUrl(value);
+    if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
+    baseUrlTimerRef.current = setTimeout(() => {
+      baseUrlTimerRef.current = null;
+      const next = value.trim();
+      const current = entry.baseUrl.trim();
+      if (next === current) return;
+      void onUpdateBaseUrl(entry.id, next);
+    }, 500);
+  }, [entry.baseUrl, entry.id, onUpdateBaseUrl]);
+
+  const schedulePriorityPersist = useCallback((value: string) => {
+    setPriority(value);
+    if (priorityTimerRef.current) clearTimeout(priorityTimerRef.current);
+    priorityTimerRef.current = setTimeout(() => {
+      priorityTimerRef.current = null;
+      const next = Number.parseInt(value, 10) || 0;
+      if (next === entry.priority) return;
+      void onUpdateRouting(entry.id, { priority: next });
+    }, 350);
+  }, [entry.id, entry.priority, onUpdateRouting]);
+
+  const scheduleMaxRetriesPersist = useCallback((value: string) => {
+    setMaxRetries(value);
+    if (maxRetriesTimerRef.current) clearTimeout(maxRetriesTimerRef.current);
+    maxRetriesTimerRef.current = setTimeout(() => {
+      maxRetriesTimerRef.current = null;
+      const next = Math.max(0, Number.parseInt(value, 10) || 0);
+      if (next === entry.maxRetries) return;
+      void onUpdateRouting(entry.id, { maxRetries: next });
+    }, 350);
+  }, [entry.id, entry.maxRetries, onUpdateRouting]);
 
   const handleToggleApiKeyVisibility = async () => {
     if (showApiKey) {
@@ -534,13 +608,15 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
           <button
             onClick={() => onToggle(entry.id, isActive ? "disabled" : "active")}
             title={isActive ? "禁用上游" : "启用上游"}
-            class={`relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 ${
-              isActive ? "bg-primary" : "bg-slate-300 dark:bg-slate-600"
-            }`}
+            aria-checked={isActive}
+            role="switch"
+            class={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none cursor-pointer ${isActive ? "bg-primary-action" : "bg-slate-300 dark:bg-slate-600"
+              }`}
           >
-            <span class={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${
-              isActive ? "translate-x-[16px]" : "translate-x-0.5"
-            }`} />
+            <span
+              class={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white dark:bg-slate-200 shadow transform transition-transform duration-200 ${isActive ? "translate-x-4" : "translate-x-0"
+                }`}
+            />
           </button>
 
           <button
@@ -571,8 +647,8 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
           <input
             type="url"
             value={baseUrl}
-            onInput={(e) => setBaseUrl((e.target as HTMLInputElement).value)}
-            onBlur={() => onUpdateBaseUrl(entry.id, baseUrl)}
+            onInput={(e) => scheduleBaseUrlPersist((e.target as HTMLInputElement).value)}
+            onBlur={persistBaseUrl}
             class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
         </div>
@@ -612,8 +688,8 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
           <input
             type="number"
             value={priority}
-            onInput={(e) => setPriority((e.target as HTMLInputElement).value)}
-            onBlur={() => onUpdateRouting(entry.id, { priority: Number.parseInt(priority, 10) || 0 })}
+            onInput={(e) => schedulePriorityPersist((e.target as HTMLInputElement).value)}
+            onBlur={persistPriority}
             class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
         </div>
@@ -625,8 +701,8 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
             min="0"
             max="10"
             value={maxRetries}
-            onInput={(e) => setMaxRetries((e.target as HTMLInputElement).value)}
-            onBlur={() => onUpdateRouting(entry.id, { maxRetries: Math.max(0, Number.parseInt(maxRetries, 10) || 0) })}
+            onInput={(e) => scheduleMaxRetriesPersist((e.target as HTMLInputElement).value)}
+            onBlur={persistMaxRetries}
             class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
         </div>
@@ -758,12 +834,29 @@ function UsageMetricCard({ label, value }: { label: string; value: string }) {
 }
 
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, fetchCustomModels } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
   const { summary, loading: usageLoading } = useUsageSummary();
   const groupedKeys = useMemo(() => groupEntries(keys), [keys]);
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pendingPersistRef = useRef(new Set<Promise<void>>());
+
+  const trackPersist = useCallback((promise: Promise<void>) => {
+    pendingPersistRef.current.add(promise);
+    promise.finally(() => {
+      pendingPersistRef.current.delete(promise);
+    });
+    return promise;
+  }, []);
+
+  const handleUpdateBaseUrl = useCallback((id: string, baseUrl: string) => {
+    return trackPersist(updateBaseUrl(id, baseUrl));
+  }, [trackPersist, updateBaseUrl]);
+
+  const handleUpdateRouting = useCallback((id: string, routing: { priority?: number; maxRetries?: number }) => {
+    return trackPersist(updateRouting(id, routing));
+  }, [trackPersist, updateRouting]);
 
   const handleImport = useCallback(async () => {
     const files = fileRef.current?.files;
@@ -778,6 +871,25 @@ export function ApiKeyManager() {
     if (fileRef.current) fileRef.current.value = "";
   }, [importKeys]);
 
+  const handleExport = useCallback(async () => {
+    try {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+      }
+      await Promise.resolve();
+      const pending = [...pendingPersistRef.current];
+      if (pending.length > 0) {
+        await Promise.allSettled(pending);
+      }
+      await exportKeys();
+      setImportResult("导出成功");
+    } catch {
+      setImportResult("导出失败");
+    }
+    setTimeout(() => setImportResult(null), 5000);
+  }, [exportKeys]);
+
   if (loading) {
     return <div class="text-sm text-slate-400 dark:text-text-dim animate-pulse">正在加载中转上游服务商...</div>;
   }
@@ -789,7 +901,7 @@ export function ApiKeyManager() {
           <svg class="size-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
           </svg>
-          中转上游服务商管理
+          上游服务商管理
           <span class="text-xs font-normal text-slate-400 dark:text-text-dim">
             ({groupedKeys.length})
           </span>
@@ -801,6 +913,15 @@ export function ApiKeyManager() {
           )}
 
           <input ref={fileRef} type="file" accept=".json" onChange={handleImport} class="hidden" />
+          <button
+            onClick={() => void handleExport()}
+            title="导出上游"
+            class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
+          >
+            <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 10.5 12 6m0 0 4.5 4.5M12 6v13.5" />
+            </svg>
+          </button>
           <button
             onClick={() => fileRef.current?.click()}
             title="导入上游"
@@ -841,21 +962,21 @@ export function ApiKeyManager() {
       ) : (
         <div class="flex flex-col gap-2">
           {groupedKeys.map((entry) => (
-              <KeyRow
-                key={entry.id}
-                entry={entry}
-                usage={aggregateUsageForEntry(entry, summary?.upstream_breakdown)}
-                usageLoading={usageLoading}
-                onDelete={deleteKey}
-                onToggle={toggleStatus}
-                onUpdateBaseUrl={updateBaseUrl}
-                onRevealApiKey={revealApiKey}
-                onRefreshModels={refreshEntryModels}
-                onAddModels={addEntryModels}
-                onRemoveModels={removeEntryModels}
-                onUpdateRouting={updateRouting}
-              />
-            ))}
+            <KeyRow
+              key={entry.id}
+              entry={entry}
+              usage={aggregateUsageForEntry(entry, summary?.upstream_breakdown)}
+              usageLoading={usageLoading}
+              onDelete={deleteKey}
+              onToggle={toggleStatus}
+              onUpdateBaseUrl={handleUpdateBaseUrl}
+              onRevealApiKey={revealApiKey}
+              onRefreshModels={refreshEntryModels}
+              onAddModels={addEntryModels}
+              onRemoveModels={removeEntryModels}
+              onUpdateRouting={handleUpdateRouting}
+            />
+          ))}
         </div>
       )}
     </div>

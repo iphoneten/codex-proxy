@@ -100,4 +100,5 @@ export interface HandleDirectRequestOptions {
   fmt: FormatAdapter;
   upstreamCandidates?: Array<{ adapter: UpstreamAdapter; entry?: ApiKeyEntry; resolvedModel?: string }>;
   upstreamEntry?: ApiKeyEntry;
+  fallbackToAccountPool?: (error: unknown) => Promise<Response>;
 }

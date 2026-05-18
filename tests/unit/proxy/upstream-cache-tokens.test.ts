@@ -115,6 +115,100 @@ describe("OpenAIUpstream — cache_tokens extraction", () => {
     const usage = findCompleted(events);
     expect(usage?.output_tokens_details).toBeUndefined();
   });
+
+  it("maps OpenAI-compatible reasoning deltas to Codex reasoning summary events", async () => {
+    const sse = [
+      "data: " + JSON.stringify({
+        id: "chatcmpl-r",
+        choices: [{ index: 0, delta: { reasoning_content: "think " } }],
+      }),
+      "",
+      "data: " + JSON.stringify({
+        id: "chatcmpl-r",
+        choices: [{ index: 0, delta: { content: "answer" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2 },
+      }),
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+
+    const upstream = new OpenAIUpstream("openai", "fake-key");
+    const events = await collect(upstream.parseStream(makeResponse(sse)));
+    expect(events).toEqual(expect.arrayContaining([
+      {
+        event: "response.reasoning_summary_text.delta",
+        data: { delta: "think " },
+      },
+      {
+        event: "response.output_text.delta",
+        data: { delta: "answer" },
+      },
+    ]));
+    expect(events.at(-1)?.event).toBe("response.completed");
+    expect((events.at(-1)?.data as { response?: { id?: string } }).response?.id).toBe("chatcmpl-r");
+  });
+
+  it("emits complete Codex function-call lifecycle for OpenAI tool calls", async () => {
+    const sse = [
+      "data: " + JSON.stringify({
+        id: "chatcmpl-tools",
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_read",
+              type: "function",
+              function: { name: "read_file", arguments: "{\"path\":" },
+            }],
+          },
+        }],
+      }),
+      "",
+      "data: " + JSON.stringify({
+        id: "chatcmpl-tools",
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { arguments: "\"package.json\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 4 },
+      }),
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+
+    const upstream = new OpenAIUpstream("openai", "fake-key");
+    const events = await collect(upstream.parseStream(makeResponse(sse)));
+    expect(events.map((event) => event.event)).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.function_call_arguments.delta",
+      "response.function_call_arguments.delta",
+      "response.function_call_arguments.done",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+    const done = events.find((event) => event.event === "response.output_item.done");
+    expect(done?.data).toEqual({
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "item_0",
+        call_id: "call_read",
+        name: "read_file",
+        arguments: "{\"path\":\"package.json\"}",
+        status: "completed",
+      },
+    });
+  });
 });
 
 describe("AnthropicUpstream — cache_tokens extraction", () => {

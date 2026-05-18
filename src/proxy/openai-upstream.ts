@@ -46,6 +46,24 @@ function buildUsageDetails(opts: {
   };
 }
 
+function extractReasoningDelta(delta: Record<string, unknown>): string | null {
+  if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+    return delta.reasoning_content;
+  }
+  if (typeof delta.reasoning === "string" && delta.reasoning.length > 0) {
+    return delta.reasoning;
+  }
+  const reasoning = isRecord(delta.reasoning) ? delta.reasoning : null;
+  if (!reasoning) return null;
+  if (typeof reasoning.content === "string" && reasoning.content.length > 0) {
+    return reasoning.content;
+  }
+  if (typeof reasoning.text === "string" && reasoning.text.length > 0) {
+    return reasoning.text;
+  }
+  return null;
+}
+
 export class OpenAIUpstream implements UpstreamAdapter {
   readonly tag: string;
   private apiKey: string;
@@ -84,7 +102,7 @@ export class OpenAIUpstream implements UpstreamAdapter {
   }
 
   async *parseStream(response: Response): AsyncGenerator<CodexSSEEvent> {
-    const responseId = `openai-${randomUUID().slice(0, 8)}`;
+    let responseId = `openai-${randomUUID().slice(0, 8)}`;
     let sentCreated = false;
     let finishReason: string | null = null;
     const usage = { input_tokens: 0, output_tokens: 0, cached_tokens: 0 };
@@ -104,6 +122,7 @@ export class OpenAIUpstream implements UpstreamAdapter {
       // Emit response.created once
       if (!sentCreated) {
         const id = typeof chunk.id === "string" ? chunk.id : responseId;
+        responseId = id;
         yield {
           event: "response.created",
           data: { response: { id } },
@@ -131,6 +150,14 @@ export class OpenAIUpstream implements UpstreamAdapter {
 
         if (typeof choice.finish_reason === "string") {
           finishReason = choice.finish_reason;
+        }
+
+        const reasoningDelta = extractReasoningDelta(delta);
+        if (reasoningDelta) {
+          yield {
+            event: "response.reasoning_summary_text.delta",
+            data: { delta: reasoningDelta },
+          };
         }
 
         // Text delta
@@ -185,6 +212,20 @@ export class OpenAIUpstream implements UpstreamAdapter {
       yield {
         event: "response.function_call_arguments.done",
         data: { call_id: info.id, name: info.name, arguments: info.argBuffer, output_index: index },
+      };
+      yield {
+        event: "response.output_item.done",
+        data: {
+          output_index: index,
+          item: {
+            type: "function_call",
+            id: `item_${index}`,
+            call_id: info.id,
+            name: info.name,
+            arguments: info.argBuffer,
+            status: "completed",
+          },
+        },
       };
     }
 

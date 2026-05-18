@@ -17,6 +17,7 @@ import { handleNonStreamingCollectFailure } from "./non-streaming-collect-failur
 import { rethrowNonStreamingCodexApiErrorDuringCollect } from "./non-streaming-codex-api-error.js";
 import { releaseNonStreamingSuccessAccount } from "./non-streaming-success-release.js";
 import { collectNonStreamingResponse } from "./non-streaming-collect-response.js";
+import { enrichEgressLogUsage } from "./log-usage-enrichment.js";
 
 const MAX_EMPTY_RETRIES = 2;
 
@@ -92,6 +93,12 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         variantHash,
       });
       if (result.usage) {
+        enrichEgressLogUsage({
+          requestId,
+          model: req.model,
+          provider: "codex",
+          usage: result.usage,
+        });
         logNonStreamingUsage({ tag: fmt.tag, entryId: currentEntryId, requestId, usage: result.usage });
       }
       releaseNonStreamingSuccessAccount({

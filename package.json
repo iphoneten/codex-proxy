@@ -1,6 +1,6 @@
 {
   "name": "codex-proxy",
-  "version": "2.0.75",
+  "version": "9.9.9",
   "description": "Reverse proxy that exposes Codex Desktop Responses API as OpenAI-compatible /v1/chat/completions",
   "type": "module",
   "workspaces": [
@@ -25,7 +25,11 @@
     "extract": "tsx scripts/build/extract-fingerprint.ts",
     "apply-update": "tsx scripts/build/apply-update.ts",
     "apply-update:dry": "tsx scripts/build/apply-update.ts --dry-run",
-    "update": "tsx scripts/build/full-update.ts"
+    "update": "tsx scripts/build/full-update.ts",
+    "package:desktop": "node --import tsx scripts/build/package-electron.ts",
+    "package:desktop:mac": "node --import tsx scripts/build/package-electron.ts --platform mac",
+    "package:desktop:win": "node --import tsx scripts/build/package-electron.ts --platform win",
+    "package:desktop:linux": "node --import tsx scripts/build/package-electron.ts --platform linux"
   },
   "dependencies": {
     "@electron/asar": "^3.2.0",

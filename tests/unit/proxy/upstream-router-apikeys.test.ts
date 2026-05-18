@@ -107,6 +107,21 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     expect(candidates[1].entry?.apiKey).toBe("k1");
   });
 
+  it("includes fallback candidates for other models under the same provider family", () => {
+    pool.add({ provider: "openai", models: ["gpt-5.5", "gpt-5.4"], apiKey: "k1" });
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2", priority: 5 });
+
+    const adapters = new Map<string, UpstreamAdapter>();
+    adapters.set("codex", mockAdapter("codex"));
+
+    const router = new UpstreamRouter(adapters, {}, "codex");
+    router.setApiKeyPool(pool, mockFactory);
+
+    const candidates = router.resolveDirectCandidates("gpt-5.5");
+    expect(candidates.map((candidate) => candidate.resolvedModel)).toContain("gpt-5.5");
+    expect(candidates.some((candidate) => candidate.entry?.apiKey === "k1")).toBe(true);
+  });
+
   it("classifies known codex models explicitly", () => {
     const adapters = new Map<string, UpstreamAdapter>();
     adapters.set("codex", mockAdapter("codex"));

@@ -63,6 +63,13 @@ function urlHostForLocalRequest(host: string): string {
   return host;
 }
 
+function maskProxyApiKey(key: string | null | undefined): string {
+  if (!key) return "disabled";
+  if (key.length <= 4) return key;
+  if (key.length <= 8) return `${key.slice(0, 1)}***${key.slice(-1)}`;
+  return `${key.slice(0, 3)}***${key.slice(-2)}`;
+}
+
 /**
  * Core startup logic shared by CLI and Electron entry points.
  * Throws on config errors instead of calling process.exit().
@@ -218,12 +225,12 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     const user = accountPool.getUserInfo();
     console.log(`  User: ${user?.email ?? "unknown"}`);
     console.log(`  Plan: ${user?.planType ?? "unknown"}`);
-    console.log(`  Key:  ${config.server.proxy_api_key ?? accountPool.getProxyApiKey()}`);
+    console.log(`  Key:  ${maskProxyApiKey(config.server.proxy_api_key ?? accountPool.getProxyApiKey())}`);
     console.log(`  Pool: ${poolSummary.active} active / ${poolSummary.total} total accounts`);
   } else if (hasDirectUpstreams) {
     console.log(`  Mode: Direct upstream routing`);
     console.log(`  Upstreams: ${apiKeyPool.getAll().length} runtime relay record(s), ${adapters.size} static provider(s)`);
-    console.log(`  Key:  ${config.server.proxy_api_key ?? "disabled"}`);
+    console.log(`  Key:  ${maskProxyApiKey(config.server.proxy_api_key)}`);
   } else {
     console.log(`  Open http://${displayHost}:${port} to login`);
   }

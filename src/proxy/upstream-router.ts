@@ -215,10 +215,20 @@ export class UpstreamRouter {
 
   resolveDirectCandidates(model: string): DirectUpstreamCandidate[] {
     const apiKeyCandidates = this.resolveExactApiKeyCandidates(model);
-    if (apiKeyCandidates.length > 0) return apiKeyCandidates;
-
     const fallbackCandidates = this.resolveFallbackApiKeyCandidates(model);
-    if (fallbackCandidates.length > 0) return fallbackCandidates;
+    if (apiKeyCandidates.length > 0 || fallbackCandidates.length > 0) {
+      const seen = new Set<string>();
+      const out: DirectUpstreamCandidate[] = [];
+      for (const candidate of [...apiKeyCandidates, ...fallbackCandidates]) {
+        const key = candidate.entry
+          ? `${candidate.entry.id}:${candidate.resolvedModel ?? ""}`
+          : `${candidate.adapter.tag}:${candidate.resolvedModel ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(candidate);
+      }
+      return out;
+    }
 
     const match = this.resolveMatch(model);
     if (match.kind === "adapter") {

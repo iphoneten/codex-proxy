@@ -105,7 +105,7 @@ export const ConfigSchema = z.object({
   }),
   server: z.object({
     host: z.string().default("0.0.0.0"),
-    port: z.number().min(1).max(65535).default(8080),
+    port: z.number().min(1).max(65535).default(8090),
     proxy_api_key: z.string().nullable().default(null),
     trust_proxy: z.boolean().default(false),
   }),
@@ -145,7 +145,7 @@ export const ConfigSchema = z.object({
     skip_exhausted: z.boolean().default(true),
   }).default({}),
   update: z.object({
-    auto_update: z.boolean().default(true),
+    auto_update: z.boolean().default(false),
     auto_download: z.boolean().default(false),
     show_update_dialog: z.boolean().default(false),
     allow_prerelease: z.boolean().default(false),

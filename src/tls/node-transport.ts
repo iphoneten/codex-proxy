@@ -1,4 +1,5 @@
 import { Agent, ProxyAgent, fetch, type Dispatcher } from "undici";
+import { ReadableStream } from "node:stream/web";
 import type { TlsTransport, TlsTransportResponse } from "./transport.js";
 import { getProxyUrl } from "./proxy.js";
 
@@ -6,6 +7,21 @@ function resolveProxy(proxyUrl: string | null | undefined): string | null {
   if (proxyUrl === null) return null;
   if (proxyUrl !== undefined) return proxyUrl;
   return getProxyUrl();
+}
+
+async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf-8");
 }
 
 export class NodeTransport implements TlsTransport {
@@ -81,7 +97,7 @@ export class NodeTransport implements TlsTransport {
     const response = await this.request("GET", url, headers, undefined, undefined, proxyUrl);
     return {
       status: response.status,
-      body: await new Response(response.body).text(),
+      body: await streamToText(response.body),
     };
   }
 
@@ -94,7 +110,7 @@ export class NodeTransport implements TlsTransport {
     const response = await this.request("GET", url, headers, undefined, undefined, proxyUrl);
     return {
       status: response.status,
-      body: await new Response(response.body).text(),
+      body: await streamToText(response.body),
       setCookieHeaders: response.setCookieHeaders,
     };
   }
@@ -109,7 +125,7 @@ export class NodeTransport implements TlsTransport {
     const response = await this.request("POST", url, headers, body, undefined, proxyUrl);
     return {
       status: response.status,
-      body: await new Response(response.body).text(),
+      body: await streamToText(response.body),
     };
   }
 }
