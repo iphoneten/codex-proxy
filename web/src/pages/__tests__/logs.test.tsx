@@ -56,6 +56,7 @@ function makeLogsState(overrides: Partial<ReturnType<typeof mockLogs.useLogs>> =
     loading: false,
     state: { enabled: true, paused: false },
     setLogState: vi.fn(),
+    clearLogs: vi.fn(),
     selected: null,
     selectLog: vi.fn(),
     direction: "egress",
@@ -311,6 +312,18 @@ describe("LogsPage", () => {
     expect(screen.getByText("日志详情")).toBeTruthy();
     expect(screen.getAllByText("rid-detail-123").length).toBeGreaterThan(0);
     expect(screen.getByText("Request ID")).toBeTruthy();
+  });
+
+
+  it("renders clear logs button and invokes handler", () => {
+    const clearLogs = vi.fn();
+    mockLogs.useLogs.mockReturnValue(makeLogsState({ clearLogs, total: 1 }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    fireEvent.click(screen.getByText("清空日志"));
+    expect(clearLogs).toHaveBeenCalledTimes(1);
   });
 
   it("renders and toggles the logs mode button", () => {

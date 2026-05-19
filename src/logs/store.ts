@@ -202,6 +202,16 @@ function readPersistedRequestLogs(query: LogQuery): { records: LogRecord[]; tota
   return applyLogQuery(combined, { ...query, direction: query.direction ?? "egress" });
 }
 
+function clearRequestLogFiles(): void {
+  for (const file of [requestLogPath(), requestLogBackupPath()]) {
+    try {
+      if (existsSync(file)) writeFileSync(file, "", "utf-8");
+    } catch {
+      // Audit log persistence is best-effort; in-memory logs still work.
+    }
+  }
+}
+
 export class LogStore {
   private records: LogRecord[] = [];
   private capacity: number;
@@ -241,6 +251,7 @@ export class LogStore {
   clear(): void {
     this.records = [];
     this.dropped = 0;
+    clearRequestLogFiles();
   }
 
   enqueue(record: LogRecord): void {

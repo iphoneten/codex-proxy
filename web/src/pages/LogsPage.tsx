@@ -168,6 +168,14 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
           {logsLlmOnly ? t("logsModeLlmOnlyToggle") : t("logsModeAllToggle")}
         </button>
 
+        <button
+          class="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-500/10 dark:text-red-300 disabled:opacity-50"
+          onClick={logs.clearLogs}
+          disabled={logs.loading || logs.total === 0}
+        >
+          清空日志
+        </button>
+
         <input
           class="px-2.5 py-1 rounded-md text-xs bg-white dark:bg-bg-dark border border-slate-200 dark:border-border-dark"
           value={logs.search}

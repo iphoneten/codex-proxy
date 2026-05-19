@@ -152,6 +152,17 @@ export function useLogs(refreshIntervalMs = 1500) {
     if (resp.ok) setState(await resp.json());
   }, []);
 
+  const clearLogs = useCallback(async () => {
+    const resp = await fetch("/admin/logs/clear", { method: "POST" });
+    if (!resp.ok) return;
+    setRecords([]);
+    setTotal(0);
+    setSelected(null);
+    setPageState(0);
+    await load(0);
+    await loadState();
+  }, [load, loadState]);
+
   const selectLog = useCallback(async (id: string) => {
     try {
       const resp = await fetch(`/admin/logs/${id}`);
@@ -172,6 +183,7 @@ export function useLogs(refreshIntervalMs = 1500) {
     loading,
     state,
     setLogState,
+    clearLogs,
     selected,
     selectLog,
     page,

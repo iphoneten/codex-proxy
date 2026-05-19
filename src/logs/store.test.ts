@@ -190,6 +190,26 @@ describe("LogStore", () => {
     });
   });
 
+
+  it("clears persisted request logs", async () => {
+    store.enqueue({
+      id: "1",
+      requestId: "r1",
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+      provider: "codex",
+    });
+
+    await Promise.resolve();
+    expect(readRequestLog(10)).toHaveLength(1);
+
+    store.clear();
+
+    expect(readRequestLog(10)).toHaveLength(0);
+  });
+
   it("persists egress logs to request-log.jsonl", async () => {
     store.enqueue({
       id: "1",
