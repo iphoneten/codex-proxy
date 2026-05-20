@@ -16,6 +16,7 @@ const ModelsSchema = z.array(z.string().trim().min(1)).min(1).transform((models)
 const ApiKeyBindingSchema = z.object({
   provider: z.enum(VALID_PROVIDERS),
   protocol: z.enum(VALID_PROTOCOLS).optional(),
+  supportsResponsesApi: z.boolean().optional(),
   models: ModelsSchema,
   modelMap: z.record(z.string().trim().min(1), z.string().trim().min(1)).optional(),
   apiKey: z.string().min(1),
@@ -90,6 +91,7 @@ function addEntries(pool: ApiKeyPool, items: ApiKeyBindingInput[]): {
       keys.push(pool.add({
         provider: item.provider,
         protocol: item.protocol,
+        supportsResponsesApi: item.supportsResponsesApi,
         models: item.models,
         modelMap: item.modelMap,
         apiKey: item.apiKey,
@@ -131,6 +133,9 @@ const AddModelsSchema = z.object({ models: ModelsSchema });
 const RemoveModelsSchema = z.object({ models: ModelsSchema });
 const ModelMapSchema = z.object({
   modelMap: z.record(z.string().trim().min(1), z.string().trim().min(1)),
+});
+const SupportsResponsesApiSchema = z.object({
+  supportsResponsesApi: z.boolean(),
 });
 const ProtocolSchema = z.object({
   protocol: z.enum(VALID_PROTOCOLS),
@@ -330,6 +335,16 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     });
     if (protocolError) return protocolError;
     if (!pool.setProtocol(c.req.param("id"), parsed.data.protocol)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.patch("/auth/api-keys/:id/responses-api", async (c) => {
+    const parsed = await parseJsonRequest(c, SupportsResponsesApiSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.setSupportsResponsesApi(c.req.param("id"), parsed.data.supportsResponsesApi)) {
       c.status(404);
       return c.json({ error: "API key not found" });
     }

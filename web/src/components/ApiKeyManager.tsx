@@ -219,7 +219,7 @@ function formatModelMapInput(modelMap: Record<string, string> | undefined): stri
 }
 
 function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
-  onAdd: (input: { provider: ApiKeyProvider; protocol?: UpstreamProtocol; models: string[]; modelMap?: Record<string, string>; apiKey: string; baseUrl?: string; label?: string; priority?: number; maxRetries?: number }) => Promise<{ ok: boolean; error?: string }>;
+  onAdd: (input: { provider: ApiKeyProvider; protocol?: UpstreamProtocol; supportsResponsesApi?: boolean; models: string[]; modelMap?: Record<string, string>; apiKey: string; baseUrl?: string; label?: string; priority?: number; maxRetries?: number }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
   fetchCustomModels: (input: { provider: "custom"; apiKey: string; baseUrl: string }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
@@ -231,6 +231,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
   const [label, setLabel] = useState("");
   const [priority, setPriority] = useState("0");
   const [maxRetries, setMaxRetries] = useState("2");
+  const [supportsResponsesApi, setSupportsResponsesApi] = useState(true);
   const [manualModelsInput, setManualModelsInput] = useState("");
   const [modelMapInput, setModelMapInput] = useState("");
   const [customModels, setCustomModels] = useState<CatalogModel[]>([]);
@@ -332,6 +333,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     const result = await onAdd({
       provider,
       ...(isCustom ? { protocol } : {}),
+      ...(isCustom ? { supportsResponsesApi } : {}),
       models,
       ...(Object.keys(modelMap).length > 0 ? { modelMap } : {}),
       apiKey: normalizedApiKey,
@@ -372,6 +374,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
               setLabel("");
               setManualModelsInput("");
               setProtocol("openai");
+              setSupportsResponsesApi(true);
               latestResolvedSignatureRef.current = "";
               resetCustomModels();
             }}
@@ -440,6 +443,16 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
             ))}
           </select>
         </div>
+      )}
+
+      {isCustom && (
+        <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-text-main">
+          <input
+            type="checkbox"
+            checked={supportsResponsesApi}
+            onChange={(e) => setSupportsResponsesApi((e.target as HTMLInputElement).checked)}
+          />
+        </label>
       )}
 
       {isCustom && (
@@ -550,7 +563,7 @@ function protocolLabel(protocol: UpstreamProtocol | undefined): string {
   }
 }
 
-function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onUpdateModelMap, onUpdateProtocol, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
+function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onUpdateModelMap, onUpdateProtocol, onUpdateSupportsResponsesApi, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
   entry: GroupedApiKeyEntry;
   usage: AggregatedUpstreamUsage | null;
   usageLoading: boolean;
@@ -560,6 +573,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   onUpdateBaseUrl: (id: string, baseUrl: string) => Promise<void>;
   onUpdateModelMap: (id: string, modelMap: Record<string, string>) => Promise<{ ok: boolean; error?: string }>;
   onUpdateProtocol: (id: string, protocol: UpstreamProtocol) => Promise<{ ok: boolean; error?: string }>;
+  onUpdateSupportsResponsesApi: (id: string, supportsResponsesApi: boolean) => Promise<{ ok: boolean; error?: string }>;
   onRevealApiKey: (id: string) => Promise<{ ok: true; apiKey: string } | { ok: false; error: string }>;
   onRefreshModels: (id: string) => Promise<{ ok: true; models: string[] } | { ok: false; error: string }>;
   onAddModels: (id: string, models: string[]) => Promise<{ ok: boolean; error?: string }>;
@@ -568,6 +582,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   const isActive = entry.status === "active";
   const [expanded, setExpanded] = useState(false);
   const [protocol, setProtocol] = useState<UpstreamProtocol>(entry.protocol ?? "openai");
+  const [supportsResponsesApi, setSupportsResponsesApi] = useState(entry.supportsResponsesApi ?? false);
   const [priority, setPriority] = useState(String(entry.priority));
   const [maxRetries, setMaxRetries] = useState(String(entry.maxRetries));
   const [baseUrl, setBaseUrl] = useState(entry.baseUrl);
@@ -599,6 +614,10 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
   useEffect(() => {
     setProtocol(entry.protocol ?? "openai");
   }, [entry.protocol]);
+
+  useEffect(() => {
+    setSupportsResponsesApi(entry.supportsResponsesApi ?? false);
+  }, [entry.supportsResponsesApi]);
 
   useEffect(() => {
     setPriority(String(entry.priority));
@@ -682,6 +701,19 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
     }
     setModelMessage("协议已保存");
   }, [entry.id, entry.protocol, onUpdateProtocol]);
+
+  const handleSupportsResponsesApiChange = useCallback(async (checked: boolean) => {
+    setSupportsResponsesApi(checked);
+    const current = entry.supportsResponsesApi ?? false;
+    if (checked === current) return;
+    const result = await onUpdateSupportsResponsesApi(entry.id, checked);
+    if (!result.ok) {
+      setModelMessage(result.error || "保存 Responses API 开关失败");
+      setSupportsResponsesApi(current);
+      return;
+    }
+    setModelMessage("Responses API 开关已保存");
+  }, [entry.id, entry.supportsResponsesApi, onUpdateSupportsResponsesApi]);
 
   const persistModelMap = useCallback(async () => {
     const next = parseModelMapInput(modelMapInput);
@@ -832,7 +864,7 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
         </div>
       </div>
 
-      <div class="grid gap-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,1fr)_84px_76px]">
+      <div class="grid gap-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_24px_minmax(0,1fr)_84px_76px]">
         <div class="flex flex-col gap-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
           <input
@@ -858,6 +890,16 @@ function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRoutin
             </select>
           </div>
         ) : null}
+
+        {entry.provider === "custom" ? (
+          <label class="flex items-center justify-center self-end h-[34px] text-sm text-slate-700 dark:text-text-main">
+            <input
+              type="checkbox"
+              checked={supportsResponsesApi}
+              onChange={(e) => { void handleSupportsResponsesApiChange((e.target as HTMLInputElement).checked); }}
+            />
+          </label>
+        ) : <div />}
 
         <div class="flex flex-col gap-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
@@ -1072,7 +1114,7 @@ function UsageMetricCard({ label, value }: { label: string; value: string }) {
 }
 
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, updateProtocol, updateModelMap, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, updateProtocol, updateSupportsResponsesApi, updateModelMap, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
   const { summary, loading: usageLoading } = useUsageSummary();
   const groupedKeys = useMemo(() => groupEntries(keys), [keys]);
   const [showForm, setShowForm] = useState(false);
@@ -1103,6 +1145,10 @@ export function ApiKeyManager() {
   const handleUpdateProtocol = useCallback((id: string, protocol: UpstreamProtocol) => {
     return updateProtocol(id, protocol);
   }, [updateProtocol]);
+
+  const handleUpdateSupportsResponsesApi = useCallback((id: string, supportsResponsesApi: boolean) => {
+    return updateSupportsResponsesApi(id, supportsResponsesApi);
+  }, [updateSupportsResponsesApi]);
 
   const handleImport = useCallback(async () => {
     const files = fileRef.current?.files;
@@ -1218,6 +1264,7 @@ export function ApiKeyManager() {
               onUpdateBaseUrl={handleUpdateBaseUrl}
               onUpdateModelMap={handleUpdateModelMap}
               onUpdateProtocol={handleUpdateProtocol}
+              onUpdateSupportsResponsesApi={handleUpdateSupportsResponsesApi}
               onRevealApiKey={revealApiKey}
               onRefreshModels={refreshEntryModels}
               onAddModels={addEntryModels}

@@ -18,7 +18,7 @@ export function createAdapterForEntry(entry: ApiKeyEntry): UpstreamAdapter {
     case "openai":
     default: {
       const tag = entry.provider === "custom" ? "custom" : entry.provider;
-      return new OpenAIUpstream(tag, entry.apiKey, entry.baseUrl);
+      return new OpenAIUpstream(tag, entry.apiKey, entry.baseUrl, !!entry.supportsResponsesApi);
     }
   }
 }

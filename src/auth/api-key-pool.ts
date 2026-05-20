@@ -27,6 +27,7 @@ export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
   protocol?: UpstreamProtocol;
+  supportsResponsesApi?: boolean;
   model?: string;
   models: string[];
   modelMap?: Record<string, string>;
@@ -53,6 +54,7 @@ interface LegacyApiKeyEntry {
   id?: string;
   provider: ApiKeyProvider;
   protocol?: UpstreamProtocol;
+  supportsResponsesApi?: boolean;
   model?: string;
   models?: string[];
   modelMap?: Record<string, string>;
@@ -155,6 +157,7 @@ export class ApiKeyPool {
   add(input: {
     provider: ApiKeyProvider;
     protocol?: UpstreamProtocol;
+    supportsResponsesApi?: boolean;
     model?: string;
     models?: string[];
     modelMap?: Record<string, string>;
@@ -174,6 +177,7 @@ export class ApiKeyPool {
       id: randomBytes(8).toString("hex"),
       provider: input.provider,
       protocol: normalizeProtocol(input.protocol, input.provider),
+      supportsResponsesApi: normalizeSupportsResponsesApi(input.supportsResponsesApi, input.provider),
       models,
       model: models[0],
       modelMap: normalizeModelMap(input.modelMap),
@@ -236,6 +240,14 @@ export class ApiKeyPool {
     const entry = this.entries.find((e) => e.id === id);
     if (!entry) return false;
     entry.protocol = normalizeProtocol(protocol, entry.provider);
+    this.persist();
+    return true;
+  }
+
+  setSupportsResponsesApi(id: string, supportsResponsesApi: boolean): boolean {
+    const entry = this.entries.find((e) => e.id === id);
+    if (!entry) return false;
+    entry.supportsResponsesApi = supportsResponsesApi;
     this.persist();
     return true;
   }
@@ -339,6 +351,7 @@ export class ApiKeyPool {
   exportForReimport(): Array<{
     provider: ApiKeyProvider;
     protocol?: UpstreamProtocol;
+    supportsResponsesApi?: boolean;
     models: string[];
     modelMap?: Record<string, string>;
     apiKey: string;
@@ -350,6 +363,7 @@ export class ApiKeyPool {
     return this.entries.map((e) => ({
       provider: e.provider,
       protocol: e.protocol,
+      supportsResponsesApi: e.supportsResponsesApi,
       models: [...e.models],
       ...(e.modelMap && Object.keys(e.modelMap).length > 0 ? { modelMap: { ...e.modelMap } } : {}),
       apiKey: e.apiKey,
@@ -390,6 +404,7 @@ function normalizeApiKeyEntry(entry: ApiKeyEntry): ApiKeyEntry {
   return {
     ...entry,
     protocol: normalizeProtocol(entry.protocol, entry.provider),
+    supportsResponsesApi: normalizeSupportsResponsesApi(entry.supportsResponsesApi, entry.provider),
     models: normalizeModels(entry.models),
     model: entry.model?.trim() || normalizeModels(entry.models)[0],
     modelMap: normalizeModelMap(entry.modelMap),
@@ -445,6 +460,7 @@ function normalizeLoadedEntry(entry: ApiKeyEntry | LegacyApiKeyEntry): ApiKeyEnt
     id: entry.id ?? randomBytes(8).toString("hex"),
     provider,
     protocol: normalizeProtocol(entry.protocol, provider),
+    supportsResponsesApi: normalizeSupportsResponsesApi(entry.supportsResponsesApi, provider),
     model: models[0],
     models,
     modelMap: normalizeModelMap(entry.modelMap),
@@ -486,6 +502,14 @@ function normalizeProtocol(
     return protocol;
   }
   return defaultProtocolForProvider(provider);
+}
+
+function normalizeSupportsResponsesApi(
+  supportsResponsesApi: boolean | undefined,
+  provider: ApiKeyProvider,
+): boolean {
+  if (typeof supportsResponsesApi === "boolean") return supportsResponsesApi;
+  return provider === "custom";
 }
 
 function sortApiKeyEntries(entries: ApiKeyEntry[]): ApiKeyEntry[] {

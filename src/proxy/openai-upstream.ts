@@ -68,11 +68,13 @@ export class OpenAIUpstream implements UpstreamAdapter {
   readonly tag: string;
   private apiKey: string;
   private baseUrl: string;
+  private supportsResponsesApi: boolean;
 
-  constructor(tag: string, apiKey: string, baseUrl = "https://api.openai.com/v1") {
+  constructor(tag: string, apiKey: string, baseUrl = "https://api.openai.com/v1", supportsResponsesApi = false) {
     this.tag = tag;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.supportsResponsesApi = supportsResponsesApi;
   }
 
   async createResponse(
@@ -80,9 +82,16 @@ export class OpenAIUpstream implements UpstreamAdapter {
     signal: AbortSignal,
   ): Promise<Response> {
     const modelId = extractModelId(req.model);
-    const body = translateCodexToOpenAIRequest(req, modelId, req.stream);
+    const body = this.supportsResponsesApi
+      ? {
+          ...req,
+          model: modelId,
+          ...(req.instructions === undefined ? {} : { instructions: req.instructions }),
+        }
+      : translateCodexToOpenAIRequest(req, modelId, req.stream);
+    const endpoint = this.supportsResponsesApi ? "/responses" : "/chat/completions";
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, withFetchDispatcher({
+    const response = await fetch(`${this.baseUrl}${endpoint}`, withFetchDispatcher({
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.apiKey}`,
@@ -102,6 +111,17 @@ export class OpenAIUpstream implements UpstreamAdapter {
   }
 
   async *parseStream(response: Response): AsyncGenerator<CodexSSEEvent> {
+    if (this.supportsResponsesApi) {
+      for await (const raw of parseSSEStream(response)) {
+        const eventName =
+          raw.event?.trim()
+          || (isRecord(raw.data) && typeof raw.data.type === "string" ? raw.data.type : "");
+        if (!eventName) continue;
+        yield { event: eventName, data: raw.data };
+      }
+      return;
+    }
+
     let responseId = `openai-${randomUUID().slice(0, 8)}`;
     let sentCreated = false;
     let finishReason: string | null = null;

@@ -62,12 +62,53 @@ export class AnthropicUpstream implements UpstreamAdapter {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
+  private isPioneerDebug(): boolean {
+    return this.baseUrl.includes("api.pioneer.ai");
+  }
+
   async createResponse(
     req: CodexResponsesRequest,
     signal: AbortSignal,
   ): Promise<Response> {
     const modelId = extractModelId(req.model);
     const body = translateCodexToAnthropicRequest(req, modelId);
+
+    if (this.isPioneerDebug()) {
+      const systemPreview = typeof body.system === "string"
+        ? body.system.slice(0, 1200)
+        : undefined;
+      const preview = {
+        model: body.model,
+        system: systemPreview,
+        messages: body.messages.slice(0, 4).map((message) => ({
+          role: message.role,
+          content:
+            typeof message.content === "string"
+              ? message.content.slice(0, 600)
+              : message.content.map((block) => {
+                  if (block.type === "text") {
+                    return { ...block, text: block.text.slice(0, 400) };
+                  }
+                  if (block.type === "tool_result") {
+                    return {
+                      ...block,
+                      content: typeof block.content === "string"
+                        ? block.content.slice(0, 400)
+                        : block.content,
+                    };
+                  }
+                  return block;
+                }),
+        })),
+        toolCount: body.tools?.length ?? 0,
+        tools: body.tools?.slice(0, 10),
+        tool_choice: body.tool_choice,
+        thinking: body.thinking,
+        stream: body.stream,
+        max_tokens: body.max_tokens,
+      };
+      console.warn(`[PioneerAnthropic] request=${JSON.stringify(preview)}`);
+    }
 
     const response = await fetch(`${this.baseUrl}/messages`, {
       method: "POST",
@@ -100,10 +141,26 @@ export class AnthropicUpstream implements UpstreamAdapter {
 
     // Track tool_use content blocks by index → { id, name, argBuffer }
     const toolBlocks = new Map<number, { id: string; name: string; argBuffer: string }>();
+    const pioneerDebug = this.isPioneerDebug();
+    let pioneerEventCount = 0;
+    let pioneerSawTextDelta = false;
+    let pioneerSawMessageStop = false;
+    let pioneerSawMessageDelta = false;
 
     for await (const raw of parseSSEStream(response)) {
       // Anthropic SSE uses event: field — raw.event = "message_start", etc.
       const evtType = raw.event;
+      if (pioneerDebug && pioneerEventCount < 20) {
+        const preview = (() => {
+          try {
+            return JSON.stringify(raw.data).slice(0, 800);
+          } catch {
+            return "<unserializable>";
+          }
+        })();
+        console.warn(`[PioneerAnthropic] event=${evtType ?? "unknown"} data=${preview}`);
+      }
+      pioneerEventCount++;
       if (!isRecord(raw.data)) continue;
       const data = raw.data;
 
@@ -156,6 +213,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
           if (!delta) break;
 
           if (delta.type === "text_delta" && typeof delta.text === "string") {
+            pioneerSawTextDelta = true;
             yield {
               event: "response.output_text.delta",
               data: { delta: delta.text },
@@ -192,6 +250,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
         }
 
         case "message_delta": {
+          pioneerSawMessageDelta = true;
           const usage = isRecord(data.usage) ? data.usage : null;
           if (usage && typeof usage.output_tokens === "number") {
             outputTokens = usage.output_tokens;
@@ -205,6 +264,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
         }
 
         case "message_stop": {
+          pioneerSawMessageStop = true;
           yield {
             event: "response.completed",
             data: {
@@ -237,6 +297,13 @@ export class AnthropicUpstream implements UpstreamAdapter {
           break;
         }
       }
+    }
+
+    if (pioneerDebug) {
+      console.warn(
+        `[PioneerAnthropic] stream-ended events=${pioneerEventCount} responseId=${messageId} ` +
+        `sawTextDelta=${pioneerSawTextDelta} sawMessageDelta=${pioneerSawMessageDelta} sawMessageStop=${pioneerSawMessageStop}`,
+      );
     }
   }
 }

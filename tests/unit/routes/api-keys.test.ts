@@ -231,6 +231,7 @@ describe("api key routes", () => {
       {
         provider: "openai",
         protocol: "openai",
+        supportsResponsesApi: false,
         models: ["gpt-5.4"],
         apiKey: "sk-openai",
         baseUrl: "https://api.openai.com/v1",

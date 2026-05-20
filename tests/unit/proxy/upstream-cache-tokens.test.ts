@@ -209,6 +209,29 @@ describe("OpenAIUpstream — cache_tokens extraction", () => {
       },
     });
   });
+
+  it("passes through native Responses API events when responses mode is enabled", async () => {
+    const sse = [
+      "event: response.created",
+      "data: " + JSON.stringify({ type: "response.created", response: { id: "resp_1" } }),
+      "",
+      "event: response.output_text.delta",
+      "data: " + JSON.stringify({ type: "response.output_text.delta", delta: "hello" }),
+      "",
+      "event: response.completed",
+      "data: " + JSON.stringify({ type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 2 } } }),
+      "",
+    ].join("\n");
+
+    const upstream = new OpenAIUpstream("openai", "fake-key", "https://api.example.com/v1", true);
+    const events = await collect(upstream.parseStream(makeResponse(sse)));
+
+    expect(events).toEqual([
+      { event: "response.created", data: { type: "response.created", response: { id: "resp_1" } } },
+      { event: "response.output_text.delta", data: { type: "response.output_text.delta", delta: "hello" } },
+      { event: "response.completed", data: { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 2 } } } },
+    ]);
+  });
 });
 
 describe("AnthropicUpstream — cache_tokens extraction", () => {

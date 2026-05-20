@@ -10,6 +10,7 @@
  */
 
 import type { CodexInputItem, CodexContentPart, CodexResponsesRequest } from "../proxy/codex-types.js";
+import { codexToolChoiceToAnthropic } from "./tool-format.js";
 
 /** Anthropic content block shapes. */
 type AnthropicContentBlock =
@@ -42,13 +43,23 @@ function codexPartToAnthropic(part: CodexContentPart): AnthropicContentBlock {
   return { type: "image", source: { type: "url", url: part.image_url } };
 }
 
+function extractInstructionText(
+  content: string | CodexContentPart[],
+): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((part): part is Extract<CodexContentPart, { type: "input_text" }> => part.type === "input_text")
+    .map((part) => part.text)
+    .join("\n");
+}
+
 function inputItemsToAnthropicMessages(input: CodexInputItem[]): AnthropicMessage[] {
   const messages: AnthropicMessage[] = [];
 
   for (const item of input) {
     if ("role" in item) {
-      const role = item.role;
-      if (role === "system") continue; // handled via top-level system field
+      const role = item.role as string;
+      if (role === "system" || role === "developer") continue; // handled via top-level system field
 
       const oaiRole = role as "user" | "assistant";
       if (typeof item.content === "string") {
@@ -91,6 +102,18 @@ function inputItemsToAnthropicMessages(input: CodexInputItem[]): AnthropicMessag
   return messages;
 }
 
+function extractAdditionalSystemInstructions(input: CodexInputItem[]): string {
+  const parts: string[] = [];
+  for (const item of input) {
+    if (!("role" in item)) continue;
+    const role = item.role as string;
+    if (role !== "system" && role !== "developer") continue;
+    const text = extractInstructionText(item.content).trim();
+    if (text) parts.push(text);
+  }
+  return parts.join("\n\n");
+}
+
 const REASONING_EFFORT_BUDGET: Record<string, number> = {
   low: 1024,
   medium: 8192,
@@ -103,6 +126,7 @@ export function translateCodexToAnthropicRequest(
   modelId: string,
 ): AnthropicMessageRequest {
   const messages = inputItemsToAnthropicMessages(req.input);
+  const additionalSystem = extractAdditionalSystemInstructions(req.input);
 
   const body: AnthropicMessageRequest = {
     model: modelId,
@@ -111,8 +135,9 @@ export function translateCodexToAnthropicRequest(
     stream: req.stream,
   };
 
-  if (req.instructions) {
-    body.system = req.instructions;
+  const systemText = [req.instructions?.trim(), additionalSystem].filter(Boolean).join("\n\n");
+  if (systemText) {
+    body.system = systemText;
   }
 
   // Thinking budget for extended reasoning
@@ -124,7 +149,8 @@ export function translateCodexToAnthropicRequest(
   if (req.tools?.length) {
     body.tools = req.tools;
     if (req.tool_choice !== undefined) {
-      body.tool_choice = req.tool_choice;
+      const toolChoice = codexToolChoiceToAnthropic(req.tool_choice);
+      if (toolChoice) body.tool_choice = toolChoice;
     }
   }
 

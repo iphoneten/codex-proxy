@@ -7,6 +7,7 @@ export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
   protocol?: UpstreamProtocol;
+  supportsResponsesApi?: boolean;
   model?: string;
   models: string[];
   modelMap?: Record<string, string>;
@@ -81,6 +82,7 @@ export function useApiKeys() {
   const addKey = useCallback(async (input: {
     provider: ApiKeyProvider;
     protocol?: UpstreamProtocol;
+    supportsResponsesApi?: boolean;
     models: string[];
     modelMap?: Record<string, string>;
     apiKey: string;
@@ -175,6 +177,22 @@ export function useApiKeys() {
       });
       const data = await resp.json();
       if (!resp.ok) return { ok: false, error: data.error || "Failed to update protocol" };
+      await loadKeys();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, [loadKeys]);
+
+  const updateSupportsResponsesApi = useCallback(async (id: string, supportsResponsesApi: boolean): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/responses-api`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ supportsResponsesApi }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to update responses api support" };
       await loadKeys();
       return { ok: true };
     } catch (err) {
@@ -338,6 +356,7 @@ export function useApiKeys() {
     updateLabel,
     updateBaseUrl,
     updateProtocol,
+    updateSupportsResponsesApi,
     updateApiKey,
     revealApiKey,
     loadEntryModels,

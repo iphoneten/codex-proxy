@@ -200,6 +200,7 @@ describe("ApiKeyPool", () => {
     expect(exported[0]).toEqual({
       provider: "anthropic",
       protocol: "anthropic",
+      supportsResponsesApi: false,
       models: ["claude-opus-4-6"],
       apiKey: "k1",
       baseUrl: "https://api.anthropic.com/v1",

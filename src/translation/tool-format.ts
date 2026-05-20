@@ -257,6 +257,33 @@ export function anthropicToolChoiceToCodex(
   }
 }
 
+export function codexToolChoiceToAnthropic(
+  choice: unknown,
+): AnthropicMessagesRequest["tool_choice"] | undefined {
+  if (choice === undefined || choice === null) return undefined;
+  if (typeof choice === "string") {
+    switch (choice) {
+      case "auto":
+        return { type: "auto" };
+      case "required":
+        return { type: "any" };
+      case "none":
+        return { type: "auto" };
+      default:
+        return undefined;
+    }
+  }
+
+  if (!isRecord(choice) || typeof choice.type !== "string") return undefined;
+  if (choice.type === "function" && typeof choice.name === "string" && choice.name.trim()) {
+    return { type: "tool", name: choice.name.trim() };
+  }
+  if (choice.type === "web_search") {
+    return { type: "auto" };
+  }
+  return undefined;
+}
+
 // ── Gemini → Codex ──────────────────────────────────────────────
 
 export function geminiToolsToCodex(

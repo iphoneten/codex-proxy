@@ -31,6 +31,20 @@ describe("translateCodexToAnthropicRequest", () => {
     expect(result.messages.every((m) => m.role !== "system")).toBe(true);
   });
 
+  it("moves developer-style prompt items into top-level system text", () => {
+    const req = makeBaseRequest({
+      instructions: "Base system.",
+      input: [
+        { role: "user", content: "hi" },
+        { role: "developer", content: "Use concise Chinese." } as never,
+      ],
+    });
+    const result = translateCodexToAnthropicRequest(req, "claude-3-5-sonnet-20241022");
+    expect(result.system).toContain("Base system.");
+    expect(result.system).toContain("Use concise Chinese.");
+    expect(result.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
   it("converts function_call to tool_use content block", () => {
     const req = makeBaseRequest({
       input: [
@@ -75,5 +89,35 @@ describe("translateCodexToAnthropicRequest", () => {
     const req = makeBaseRequest({ input: [{ role: "user", content: "hi" }] });
     const result = translateCodexToAnthropicRequest(req, "claude-3-5-haiku-20241022");
     expect(result.max_tokens).toBeGreaterThan(0);
+  });
+
+  it("converts string tool_choice to Anthropic object form", () => {
+    const req = makeBaseRequest({
+      input: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", name: "lookup" }],
+      tool_choice: "auto",
+    });
+    const result = translateCodexToAnthropicRequest(req, "claude-3-5-haiku-20241022");
+    expect(result.tool_choice).toEqual({ type: "auto" });
+  });
+
+  it("converts required tool_choice to Anthropic any", () => {
+    const req = makeBaseRequest({
+      input: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", name: "lookup" }],
+      tool_choice: "required",
+    });
+    const result = translateCodexToAnthropicRequest(req, "claude-3-5-haiku-20241022");
+    expect(result.tool_choice).toEqual({ type: "any" });
+  });
+
+  it("converts function tool_choice to Anthropic tool object", () => {
+    const req = makeBaseRequest({
+      input: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", name: "lookup" }],
+      tool_choice: { type: "function", name: "lookup" },
+    });
+    const result = translateCodexToAnthropicRequest(req, "claude-3-5-haiku-20241022");
+    expect(result.tool_choice).toEqual({ type: "tool", name: "lookup" });
   });
 });
