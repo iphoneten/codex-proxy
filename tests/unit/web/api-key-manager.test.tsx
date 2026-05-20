@@ -24,6 +24,14 @@ vi.mock("../../../../shared/i18n/context", () => ({
 
 import { ApiKeyManager } from "../../../../web/src/components/ApiKeyManager";
 
+Object.assign(globalThis, {
+  navigator: {
+    clipboard: {
+      writeText: vi.fn(async () => undefined),
+    },
+  },
+});
+
 describe("ApiKeyManager", () => {
   beforeEach(() => {
     mockApiKeys.useApiKeys.mockReturnValue({
@@ -53,6 +61,7 @@ describe("ApiKeyManager", () => {
       refreshEntryModels: vi.fn(),
       addEntryModels: vi.fn(),
       removeEntryModels: vi.fn(),
+      updateModelMap: vi.fn(),
       updateRouting: vi.fn(),
       reorderKeys: vi.fn(),
       importKeys: vi.fn(),
@@ -156,6 +165,64 @@ describe("ApiKeyManager", () => {
     fireEvent.drop(secondRow);
 
     expect(reorderKeys).toHaveBeenCalledWith(["2", "1"]);
+  });
+
+  it("renders add form api key input as plain text", () => {
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByTitle("添加上游"));
+    const input = screen.getByPlaceholderText("sk-...");
+    expect(input.getAttribute("type")).toBe("text");
+  });
+
+  it("copies model name when clicking the model label", async () => {
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByText("查看模型 (1)"));
+    fireEvent.click(screen.getByRole("button", { name: "codex-a" }));
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("codex-a");
+  });
+
+  it("moves disabled upstreams to the bottom of the list", () => {
+    mockApiKeys.useApiKeys.mockReturnValue({
+      ...mockApiKeys.useApiKeys(),
+      keys: [
+        {
+          id: "1",
+          provider: "custom",
+          models: ["codex-a"],
+          apiKey: "",
+          apiKeyMasked: "sk***a",
+          baseUrl: "https://a.example.com/v1",
+          label: "线路 A",
+          priority: 2,
+          maxRetries: 2,
+          status: "disabled",
+          addedAt: "2026-05-16T00:00:00.000Z",
+          lastUsedAt: null,
+        },
+        {
+          id: "2",
+          provider: "custom",
+          models: ["codex-b"],
+          apiKey: "",
+          apiKeyMasked: "sk***b",
+          baseUrl: "https://b.example.com/v1",
+          label: "线路 B",
+          priority: 1,
+          maxRetries: 2,
+          status: "active",
+          addedAt: "2026-05-16T00:00:01.000Z",
+          lastUsedAt: null,
+        },
+      ],
+    });
+
+    render(<ApiKeyManager />);
+
+    const names = screen.getAllByText(/线路 [AB]/).map((node) => node.textContent);
+    expect(names).toEqual(["线路 B", "线路 A"]);
   });
 
 });

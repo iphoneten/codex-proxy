@@ -7,14 +7,17 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import type { ApiKeyEntry, ApiKeyPool } from "../auth/api-key-pool.js";
-import { PROVIDER_CATALOG } from "../auth/api-key-catalog.js";
+import { PROVIDER_CATALOG, type UpstreamProtocol } from "../auth/api-key-catalog.js";
 
 const VALID_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter", "custom"] as const;
+const VALID_PROTOCOLS = ["openai", "anthropic", "gemini"] as const;
 const ModelsSchema = z.array(z.string().trim().min(1)).min(1).transform((models) => [...new Set(models)]);
 
 const ApiKeyBindingSchema = z.object({
   provider: z.enum(VALID_PROVIDERS),
+  protocol: z.enum(VALID_PROTOCOLS).optional(),
   models: ModelsSchema,
+  modelMap: z.record(z.string().trim().min(1), z.string().trim().min(1)).optional(),
   apiKey: z.string().min(1),
   baseUrl: z.string().url().optional(),
   label: z.string().max(64).nullable().optional(),
@@ -27,6 +30,7 @@ const ApiKeyBindingSchema = z.object({
 
 const FetchCustomModelsSchema = z.object({
   provider: z.literal("custom"),
+  protocol: z.enum(VALID_PROTOCOLS).optional(),
   apiKey: z.string().trim().min(1),
   baseUrl: z.string().trim().url(),
 });
@@ -36,6 +40,16 @@ const BulkImportSchema = z.object({
 });
 
 type ApiKeyBindingInput = z.infer<typeof ApiKeyBindingSchema>;
+
+function isProtocolCompatible(
+  provider: ApiKeyBindingInput["provider"],
+  protocol: UpstreamProtocol | undefined,
+): boolean {
+  if (provider === "custom") return true;
+  if (!protocol) return true;
+  if (provider === "openrouter" && protocol === "openai") return true;
+  return provider === protocol;
+}
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
@@ -75,7 +89,9 @@ function addEntries(pool: ApiKeyPool, items: ApiKeyBindingInput[]): {
     try {
       keys.push(pool.add({
         provider: item.provider,
+        protocol: item.protocol,
         models: item.models,
+        modelMap: item.modelMap,
         apiKey: item.apiKey,
         baseUrl: item.baseUrl,
         label: item.label,
@@ -113,6 +129,12 @@ const BatchDeleteSchema = z.object({ ids: z.array(z.string()).min(1) });
 const ReorderSchema = z.object({ ids: z.array(z.string()).min(1) });
 const AddModelsSchema = z.object({ models: ModelsSchema });
 const RemoveModelsSchema = z.object({ models: ModelsSchema });
+const ModelMapSchema = z.object({
+  modelMap: z.record(z.string().trim().min(1), z.string().trim().min(1)),
+});
+const ProtocolSchema = z.object({
+  protocol: z.enum(VALID_PROTOCOLS),
+});
 
 async function parseJsonRequest<T>(c: Context, schema: z.ZodSchema<T>): Promise<
   { ok: true; data: T } | { ok: false; response: Response }
@@ -132,6 +154,15 @@ async function parseJsonRequest<T>(c: Context, schema: z.ZodSchema<T>): Promise<
   }
 
   return { ok: true, data: result.data };
+}
+
+function rejectProtocolMismatch(
+  c: Context,
+  body: { provider: ApiKeyBindingInput["provider"]; protocol?: UpstreamProtocol },
+): Response | null {
+  if (isProtocolCompatible(body.provider, body.protocol)) return null;
+  c.status(400);
+  return c.json({ error: "Built-in providers must use their matching protocol (openrouter uses openai)." });
 }
 
 export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
@@ -158,14 +189,28 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     if (!parsed.ok) return parsed.response;
 
     const baseUrl = normalizeBaseUrl(parsed.data.baseUrl);
+    const protocol = parsed.data.protocol ?? "openai";
 
     try {
-      const upstream = await fetch(`${baseUrl}/models`, {
-        headers: {
-          "Authorization": `Bearer ${parsed.data.apiKey}`,
-          "Accept": "application/json",
+      const upstream = await fetch(
+        protocol === "gemini"
+          ? `${baseUrl}/models?key=${encodeURIComponent(parsed.data.apiKey)}`
+          : `${baseUrl}/models`,
+        {
+          headers: protocol === "anthropic"
+            ? {
+                "x-api-key": parsed.data.apiKey,
+                "anthropic-version": "2023-06-01",
+                "Accept": "application/json",
+              }
+            : protocol === "gemini"
+              ? { "Accept": "application/json" }
+              : {
+                  "Authorization": `Bearer ${parsed.data.apiKey}`,
+                  "Accept": "application/json",
+                },
         },
-      });
+      );
 
       if (!upstream.ok) {
         if (upstream.status === 401 || upstream.status === 403) {
@@ -201,6 +246,10 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
   app.post("/auth/api-keys/import", async (c) => {
     const parsed = await parseJsonRequest(c, BulkImportSchema);
     if (!parsed.ok) return parsed.response;
+    for (const item of parsed.data.keys) {
+      const protocolError = rejectProtocolMismatch(c, item);
+      if (protocolError) return protocolError;
+    }
     const result = addEntries(pool, parsed.data.keys);
     return c.json({ success: true, added: result.added, failed: result.failed, errors: result.errors });
   });
@@ -210,6 +259,8 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
   app.post("/auth/api-keys", async (c) => {
     const parsed = await parseJsonRequest(c, ApiKeyBindingSchema);
     if (!parsed.ok) return parsed.response;
+    const protocolError = rejectProtocolMismatch(c, parsed.data);
+    if (protocolError) return protocolError;
     const result = addEntries(pool, [parsed.data]);
     return c.json({
       success: true,
@@ -265,6 +316,26 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     return c.json({ success: true });
   });
 
+  app.patch("/auth/api-keys/:id/protocol", async (c) => {
+    const parsed = await parseJsonRequest(c, ProtocolSchema);
+    if (!parsed.ok) return parsed.response;
+    const entry = pool.getEntry(c.req.param("id"));
+    if (!entry) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    const protocolError = rejectProtocolMismatch(c, {
+      provider: entry.provider,
+      protocol: parsed.data.protocol,
+    });
+    if (protocolError) return protocolError;
+    if (!pool.setProtocol(c.req.param("id"), parsed.data.protocol)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ success: true });
+  });
+
   app.patch("/auth/api-keys/:id/api-key", async (c) => {
     const parsed = await parseJsonRequest(c, ApiKeySchema);
     if (!parsed.ok) return parsed.response;
@@ -293,6 +364,15 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     return c.json({ models: entry.models });
   });
 
+  app.get("/auth/api-keys/:id/model-map", (c) => {
+    const entry = pool.getEntry(c.req.param("id"));
+    if (!entry) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
+    }
+    return c.json({ modelMap: entry.modelMap ?? {} });
+  });
+
   app.post("/auth/api-keys/:id/models", async (c) => {
     const parsed = await parseJsonRequest(c, AddModelsSchema);
     if (!parsed.ok) return parsed.response;
@@ -309,6 +389,16 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     if (!pool.removeModels(c.req.param("id"), parsed.data.models)) {
       c.status(404);
       return c.json({ error: "API key not found or no models left" });
+    }
+    return c.json({ success: true });
+  });
+
+  app.patch("/auth/api-keys/:id/model-map", async (c) => {
+    const parsed = await parseJsonRequest(c, ModelMapSchema);
+    if (!parsed.ok) return parsed.response;
+    if (!pool.setModelMap(c.req.param("id"), parsed.data.modelMap)) {
+      c.status(404);
+      return c.json({ error: "API key not found" });
     }
     return c.json({ success: true });
   });

@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 
 export type ApiKeyProvider = "anthropic" | "openai" | "gemini" | "openrouter" | "custom";
+export type UpstreamProtocol = "openai" | "anthropic" | "gemini";
 
 export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
+  protocol?: UpstreamProtocol;
   model?: string;
   models: string[];
+  modelMap?: Record<string, string>;
   apiKey: string;
   apiKeyMasked?: string;
   baseUrl: string;
@@ -31,6 +34,7 @@ export interface ProviderMeta {
 
 export interface FetchCustomModelsInput {
   provider: "custom";
+  protocol?: UpstreamProtocol;
   apiKey: string;
   baseUrl: string;
 }
@@ -76,7 +80,9 @@ export function useApiKeys() {
 
   const addKey = useCallback(async (input: {
     provider: ApiKeyProvider;
+    protocol?: UpstreamProtocol;
     models: string[];
+    modelMap?: Record<string, string>;
     apiKey: string;
     baseUrl?: string;
     label?: string | null;
@@ -160,6 +166,22 @@ export function useApiKeys() {
     } catch { /* ignore */ }
   }, [loadKeys]);
 
+  const updateProtocol = useCallback(async (id: string, protocol: UpstreamProtocol): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/protocol`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ protocol }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to update protocol" };
+      await loadKeys();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, [loadKeys]);
+
   const updateApiKey = useCallback(async (id: string, apiKey: string) => {
     try {
       await fetch(`/auth/api-keys/${id}/api-key`, {
@@ -236,6 +258,22 @@ export function useApiKeys() {
     }
   }, [loadKeys]);
 
+  const updateModelMap = useCallback(async (id: string, modelMap: Record<string, string>): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resp = await fetch(`/auth/api-keys/${id}/model-map`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelMap }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to update model map" };
+      await loadKeys();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, [loadKeys]);
+
   const importKeys = useCallback(async (file: File): Promise<{ added: number; failed: number; errors: string[] }> => {
     const text = await file.text();
     const body = JSON.parse(text);
@@ -250,7 +288,7 @@ export function useApiKeys() {
   }, [loadKeys]);
 
   const fetchCustomModels = useCallback(async (input: FetchCustomModelsInput): Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }> => {
-    const cacheKey = `${input.baseUrl.trim()}::${input.apiKey.trim()}`;
+    const cacheKey = `${input.protocol ?? "openai"}::${input.baseUrl.trim()}::${input.apiKey.trim()}`;
     const cached = customModelCacheRef.current.get(cacheKey);
     if (cached) return { ok: true, models: cached };
 
@@ -260,6 +298,7 @@ export function useApiKeys() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider: input.provider,
+          protocol: input.protocol,
           apiKey: input.apiKey.trim(),
           baseUrl: input.baseUrl.trim(),
         }),
@@ -298,12 +337,14 @@ export function useApiKeys() {
     toggleStatus,
     updateLabel,
     updateBaseUrl,
+    updateProtocol,
     updateApiKey,
     revealApiKey,
     loadEntryModels,
     refreshEntryModels,
     addEntryModels,
     removeEntryModels,
+    updateModelMap,
     updateRouting,
     reorderKeys,
     importKeys,

@@ -5,6 +5,7 @@
 
 export type BuiltinProvider = "anthropic" | "openai" | "gemini" | "openrouter";
 export type ApiKeyProvider = BuiltinProvider | "custom";
+export type UpstreamProtocol = "openai" | "anthropic" | "gemini";
 
 export interface CatalogModel {
   id: string;
@@ -79,4 +80,18 @@ export const PROVIDER_CATALOG: Record<BuiltinProvider, ProviderMeta> = {
 /** Check whether a provider name is one of the built-in providers. */
 export function isBuiltinProvider(provider: string): provider is BuiltinProvider {
   return provider === "anthropic" || provider === "openai" || provider === "gemini" || provider === "openrouter";
+}
+
+export function defaultProtocolForProvider(provider: ApiKeyProvider): UpstreamProtocol {
+  switch (provider) {
+    case "anthropic":
+      return "anthropic";
+    case "gemini":
+      return "gemini";
+    case "openai":
+    case "openrouter":
+    case "custom":
+    default:
+      return "openai";
+  }
 }

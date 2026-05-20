@@ -1318,8 +1318,12 @@ export function createResponsesRoutes(
     if (body instanceof Response) return body;
 
     const rawModel = typeof body.model === "string" ? body.model : "codex";
+    const directCandidates = resolveDirectCandidatesSafe(upstreamRouter, rawModel);
     const routeMatch = upstreamRouter?.resolveMatch(rawModel);
-    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const allowUnauthenticated =
+      !!directCandidates?.length ||
+      routeMatch?.kind === "api-key" ||
+      routeMatch?.kind === "adapter";
     const authErr = checkAuth(c, accountPool, allowUnauthenticated);
     if (authErr) return authErr;
 

@@ -199,6 +199,7 @@ describe("ApiKeyPool", () => {
     expect(exported).toHaveLength(1);
     expect(exported[0]).toEqual({
       provider: "anthropic",
+      protocol: "anthropic",
       models: ["claude-opus-4-6"],
       apiKey: "k1",
       baseUrl: "https://api.anthropic.com/v1",
@@ -206,6 +207,25 @@ describe("ApiKeyPool", () => {
       priority: 0,
       maxRetries: 2,
     });
+  });
+
+  it("defaults custom upstream protocol to openai and allows overriding it", () => {
+    const openaiCompat = pool.add({
+      provider: "custom",
+      model: "gpt-5.4",
+      apiKey: "k1",
+      baseUrl: "https://example.com/v1",
+    });
+    const anthropicCompat = pool.add({
+      provider: "custom",
+      protocol: "anthropic",
+      model: "claude-sonnet-4-6",
+      apiKey: "k2",
+      baseUrl: "https://example.com/v1",
+    });
+
+    expect(openaiCompat.protocol).toBe("openai");
+    expect(anthropicCompat.protocol).toBe("anthropic");
   });
 
   it("removeModels removes only the selected models and keeps the first remaining model as primary", () => {
@@ -236,7 +256,7 @@ describe("ApiKeyPool", () => {
     });
   });
 
-  it("reorders entries by assigning descending priorities", () => {
+  it("reorders entries without changing priorities", () => {
     const first = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
     const second = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2" });
     const third = pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k3" });
@@ -245,7 +265,7 @@ describe("ApiKeyPool", () => {
 
     const ordered = pool.getByModel("gpt-5.4");
     expect(ordered.map((entry) => entry.id)).toEqual([third.id, first.id, second.id]);
-    expect(ordered.map((entry) => entry.priority)).toEqual([3, 2, 1]);
+    expect(ordered.map((entry) => entry.priority)).toEqual([0, 0, 0]);
   });
 
   it("rejects reorder requests with duplicate or missing ids", () => {

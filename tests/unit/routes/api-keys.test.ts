@@ -230,6 +230,7 @@ describe("api key routes", () => {
     expect(body.keys).toEqual([
       {
         provider: "openai",
+        protocol: "openai",
         models: ["gpt-5.4"],
         apiKey: "sk-openai",
         baseUrl: "https://api.openai.com/v1",
@@ -238,6 +239,47 @@ describe("api key routes", () => {
         maxRetries: 2,
       },
     ]);
+  });
+
+  it("accepts a custom upstream with anthropic protocol", async () => {
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        protocol: "anthropic",
+        models: ["claude-haiku-4-5"],
+        apiKey: "sk-ant-custom",
+        baseUrl: "https://api.pioneer.ai/v1",
+        label: "pioneer",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(pool.getAll()[0]).toMatchObject({
+      provider: "custom",
+      protocol: "anthropic",
+      baseUrl: "https://api.pioneer.ai/v1",
+    });
+  });
+
+  it("updates protocol for an existing custom upstream", async () => {
+    const added = pool.add({
+      provider: "custom",
+      models: ["gpt-5.4"],
+      apiKey: "sk-custom",
+      baseUrl: "https://api.pioneer.ai/v1",
+      label: "pioneer",
+    });
+
+    const res = await app.request(`/auth/api-keys/${added.id}/protocol`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ protocol: "anthropic" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(pool.getEntry(added.id)).toMatchObject({ protocol: "anthropic" });
   });
 
   it("reorders upstream entries", async () => {

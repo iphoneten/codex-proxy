@@ -100,6 +100,8 @@ export function buildDisplayLogRows(records: LogRecord[]): DisplayLogRecord[] {
 
     existing.latencyMs = addLatency(existing.latencyMs, record.latencyMs);
     existing.attemptCount += 1;
+    if (record.error) existing.error = record.error;
+    if (record.status != null) existing.status = record.status;
   }
 
   return rows;
@@ -267,6 +269,9 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                       <DetailField label="模型" value={selectedRow.model ?? "-"} />
                       <DetailField label="上游" value={getUpstreamLabel(selectedRow)} />
                       <DetailField label="状态" value={selectedRow.status?.toString() ?? "-"} />
+                      {selectedRow.error ? (
+                        <DetailField label="错误" value={selectedRow.error} />
+                      ) : null}
                       <DetailField label="输入 / 输出" value={selectedRow.tokenPair} />
                       <DetailField label="净算力" value={formatTokenValue(selectedRow.computeTokens)} />
                       <DetailField label="缓存" value={formatTokenValue(selectedRow.cacheTokens)} />

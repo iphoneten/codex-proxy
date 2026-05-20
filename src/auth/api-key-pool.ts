@@ -16,8 +16,8 @@ import {
 import { resolve, dirname } from "path";
 import { randomBytes } from "crypto";
 import { getDataDir } from "../paths.js";
-import type { ApiKeyProvider } from "./api-key-catalog.js";
-import { isBuiltinProvider, PROVIDER_CATALOG } from "./api-key-catalog.js";
+import type { ApiKeyProvider, UpstreamProtocol } from "./api-key-catalog.js";
+import { defaultProtocolForProvider, isBuiltinProvider, PROVIDER_CATALOG } from "./api-key-catalog.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -26,8 +26,10 @@ export type ApiKeyStatus = "active" | "disabled" | "error";
 export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
+  protocol?: UpstreamProtocol;
   model?: string;
   models: string[];
+  modelMap?: Record<string, string>;
   apiKey: string;
   baseUrl: string;
   label: string | null;
@@ -50,8 +52,10 @@ export interface ApiKeyPersistence {
 interface LegacyApiKeyEntry {
   id?: string;
   provider: ApiKeyProvider;
+  protocol?: UpstreamProtocol;
   model?: string;
   models?: string[];
+  modelMap?: Record<string, string>;
   apiKey: string;
   baseUrl?: string;
   label?: string | null;
@@ -150,8 +154,10 @@ export class ApiKeyPool {
 
   add(input: {
     provider: ApiKeyProvider;
+    protocol?: UpstreamProtocol;
     model?: string;
     models?: string[];
+    modelMap?: Record<string, string>;
     apiKey: string;
     baseUrl?: string;
     label?: string | null;
@@ -167,8 +173,10 @@ export class ApiKeyPool {
     const entry: ApiKeyEntry = {
       id: randomBytes(8).toString("hex"),
       provider: input.provider,
+      protocol: normalizeProtocol(input.protocol, input.provider),
       models,
       model: models[0],
+      modelMap: normalizeModelMap(input.modelMap),
       apiKey: input.apiKey,
       baseUrl,
       label: input.label ?? null,
@@ -224,6 +232,22 @@ export class ApiKeyPool {
     return true;
   }
 
+  setProtocol(id: string, protocol: UpstreamProtocol): boolean {
+    const entry = this.entries.find((e) => e.id === id);
+    if (!entry) return false;
+    entry.protocol = normalizeProtocol(protocol, entry.provider);
+    this.persist();
+    return true;
+  }
+
+  setModelMap(id: string, modelMap: Record<string, string>): boolean {
+    const entry = this.entries.find((e) => e.id === id);
+    if (!entry) return false;
+    entry.modelMap = normalizeModelMap(modelMap);
+    this.persist();
+    return true;
+  }
+
   reorder(ids: string[]): boolean {
     const idSet = new Set(ids);
     if (idSet.size !== ids.length) return false;
@@ -231,11 +255,6 @@ export class ApiKeyPool {
     if (ids.some((id) => !entriesById.has(id))) return false;
 
     const untouched = this.entries.filter((entry) => !idSet.has(entry.id));
-    const maxPriority = this.entries.reduce((max, entry) => Math.max(max, entry.priority), 0);
-    ids.forEach((id, index) => {
-      const entry = entriesById.get(id)!;
-      entry.priority = maxPriority + ids.length - index;
-    });
     const reordered = ids.map((id) => entriesById.get(id)!);
     this.entries = [...reordered, ...untouched];
     this.persist();
@@ -319,7 +338,9 @@ export class ApiKeyPool {
   /** Export for re-import (full keys). */
   exportForReimport(): Array<{
     provider: ApiKeyProvider;
+    protocol?: UpstreamProtocol;
     models: string[];
+    modelMap?: Record<string, string>;
     apiKey: string;
     baseUrl: string;
     label: string | null;
@@ -328,7 +349,9 @@ export class ApiKeyPool {
   }> {
     return this.entries.map((e) => ({
       provider: e.provider,
+      protocol: e.protocol,
       models: [...e.models],
+      ...(e.modelMap && Object.keys(e.modelMap).length > 0 ? { modelMap: { ...e.modelMap } } : {}),
       apiKey: e.apiKey,
       baseUrl: e.baseUrl,
       label: e.label,
@@ -364,10 +387,12 @@ function normalizeMaxRetries(maxRetries: number | undefined): number {
 }
 
 function normalizeApiKeyEntry(entry: ApiKeyEntry): ApiKeyEntry {
-    return {
+  return {
     ...entry,
+    protocol: normalizeProtocol(entry.protocol, entry.provider),
     models: normalizeModels(entry.models),
     model: entry.model?.trim() || normalizeModels(entry.models)[0],
+    modelMap: normalizeModelMap(entry.modelMap),
     priority: normalizePriority((entry as ApiKeyEntry & { priority?: number }).priority),
     maxRetries: normalizeMaxRetries((entry as ApiKeyEntry & { maxRetries?: number }).maxRetries),
   };
@@ -419,8 +444,10 @@ function normalizeLoadedEntry(entry: ApiKeyEntry | LegacyApiKeyEntry): ApiKeyEnt
   return {
     id: entry.id ?? randomBytes(8).toString("hex"),
     provider,
+    protocol: normalizeProtocol(entry.protocol, provider),
     model: models[0],
     models,
+    modelMap: normalizeModelMap(entry.modelMap),
     apiKey: entry.apiKey,
     baseUrl,
     label: entry.label ?? null,
@@ -439,9 +466,31 @@ function normalizeModels(...values: Array<string[] | string | undefined>): strin
   return [...new Set(models)];
 }
 
+function normalizeModelMap(input: Record<string, string> | undefined): Record<string, string> {
+  const modelMap: Record<string, string> = {};
+  if (!input) return modelMap;
+  for (const [rawAlias, rawTarget] of Object.entries(input)) {
+    const alias = rawAlias.trim();
+    const target = rawTarget.trim();
+    if (!alias || !target || alias === target) continue;
+    modelMap[alias] = target;
+  }
+  return modelMap;
+}
+
+function normalizeProtocol(
+  protocol: UpstreamProtocol | undefined,
+  provider: ApiKeyProvider,
+): UpstreamProtocol {
+  if (protocol === "openai" || protocol === "anthropic" || protocol === "gemini") {
+    return protocol;
+  }
+  return defaultProtocolForProvider(provider);
+}
+
 function sortApiKeyEntries(entries: ApiKeyEntry[]): ApiKeyEntry[] {
   return [...entries].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
-    return a.addedAt.localeCompare(b.addedAt);
+    return 0;
   });
 }

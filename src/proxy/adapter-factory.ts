@@ -10,16 +10,15 @@ import { AnthropicUpstream } from "./anthropic-upstream.js";
 import { GeminiUpstream } from "./gemini-upstream.js";
 
 export function createAdapterForEntry(entry: ApiKeyEntry): UpstreamAdapter {
-  switch (entry.provider) {
+  switch (entry.protocol) {
     case "anthropic":
-      return new AnthropicUpstream(entry.apiKey);
+      return new AnthropicUpstream(entry.apiKey, entry.baseUrl);
     case "gemini":
-      return new GeminiUpstream(entry.apiKey);
+      return new GeminiUpstream(entry.apiKey, entry.baseUrl);
     case "openai":
-      return new OpenAIUpstream("openai", entry.apiKey, entry.baseUrl);
-    case "openrouter":
-      return new OpenAIUpstream("openrouter", entry.apiKey, entry.baseUrl);
-    case "custom":
-      return new OpenAIUpstream("custom", entry.apiKey, entry.baseUrl);
+    default: {
+      const tag = entry.provider === "custom" ? "custom" : entry.provider;
+      return new OpenAIUpstream(tag, entry.apiKey, entry.baseUrl);
+    }
   }
 }

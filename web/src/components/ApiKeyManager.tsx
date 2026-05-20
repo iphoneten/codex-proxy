@@ -5,7 +5,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
-import type { ApiKeyProvider, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
+import type { ApiKeyProvider, ApiKeyEntry, CatalogModel, UpstreamProtocol } from "../../../shared/hooks/use-api-keys";
 import { useUsageSummary, type UsageSummary } from "../../../shared/hooks/use-usage-stats";
 import { formatNumber } from "./UsageChart";
 
@@ -20,6 +20,12 @@ const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
   { value: "custom", label: "Custom" },
 ];
 
+const PROTOCOL_OPTIONS: Array<{ value: UpstreamProtocol; label: string }> = [
+  { value: "openai", label: "OpenAI Compatible" },
+  { value: "anthropic", label: "Anthropic Messages" },
+  { value: "gemini", label: "Gemini GenerateContent" },
+];
+
 type CustomModelStatus = "idle" | "loading" | "loaded" | "fallback";
 
 function normalizeCustomModelInput(value: string): string[] {
@@ -27,6 +33,36 @@ function normalizeCustomModelInput(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+async function copyModelName(model: string): Promise<boolean> {
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(model);
+      return true;
+    }
+  } catch {
+    // Ignore clipboard failures and fall through to DOM-based copy.
+  }
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = model;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  } catch {
+    // Fall through to false below.
+  }
+
+  return false;
 }
 
 function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<string>, onToggle: (modelId: string) => void) {
@@ -40,7 +76,18 @@ function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<stri
             onChange={() => onToggle(model.id)}
           />
           <span>{model.displayName}</span>
-          <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
+          <button
+            type="button"
+            class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto hover:text-primary"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void copyModelName(model.id);
+            }}
+            title="复制模型名"
+          >
+            {model.id}
+          </button>
         </label>
       ))}
     </div>
@@ -69,10 +116,27 @@ function groupEntries(entries: ApiKeyEntry[]): GroupedApiKeyEntry[] {
       continue;
     }
     existing.models = [...new Set([...existing.models, ...entry.models])];
+    existing.modelMap = { ...(existing.modelMap ?? {}), ...(entry.modelMap ?? {}) };
     if (!existing.model) existing.model = existing.models[0];
     existing.sourceIds.push(entry.id);
   }
-  return [...grouped.values()];
+  return [...grouped.values()].sort((left, right) => compareUpstreamStatus(left.status, right.status));
+}
+
+function compareUpstreamStatus(left: ApiKeyEntry["status"], right: ApiKeyEntry["status"]): number {
+  const rank = (status: ApiKeyEntry["status"]): number => {
+    switch (status) {
+      case "active":
+        return 0;
+      case "error":
+        return 1;
+      case "disabled":
+        return 2;
+      default:
+        return 1;
+    }
+  };
+  return rank(left) - rank(right);
 }
 
 interface UpstreamUsageEntry {
@@ -132,12 +196,35 @@ function formatUsageUpdatedAt(value: string | null): string {
   return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+function parseModelMapInput(value: string): Record<string, string> {
+  const modelMap: Record<string, string> = {};
+  for (const rawLine of value.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) continue;
+    const alias = line.slice(0, separatorIndex).trim();
+    const target = line.slice(separatorIndex + 1).trim();
+    if (!alias || !target || alias === target) continue;
+    modelMap[alias] = target;
+  }
+  return modelMap;
+}
+
+function formatModelMapInput(modelMap: Record<string, string> | undefined): string {
+  return Object.entries(modelMap ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([alias, target]) => `${alias}=${target}`)
+    .join("\n");
+}
+
 function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
-  onAdd: (input: { provider: ApiKeyProvider; models: string[]; apiKey: string; baseUrl?: string; label?: string; priority?: number; maxRetries?: number }) => Promise<{ ok: boolean; error?: string }>;
+  onAdd: (input: { provider: ApiKeyProvider; protocol?: UpstreamProtocol; models: string[]; modelMap?: Record<string, string>; apiKey: string; baseUrl?: string; label?: string; priority?: number; maxRetries?: number }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
   fetchCustomModels: (input: { provider: "custom"; apiKey: string; baseUrl: string }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
   const [provider, setProvider] = useState<ApiKeyProvider>("custom");
+  const [protocol, setProtocol] = useState<UpstreamProtocol>("openai");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -145,6 +232,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
   const [priority, setPriority] = useState("0");
   const [maxRetries, setMaxRetries] = useState("2");
   const [manualModelsInput, setManualModelsInput] = useState("");
+  const [modelMapInput, setModelMapInput] = useState("");
   const [customModels, setCustomModels] = useState<CatalogModel[]>([]);
   const [customModelStatus, setCustomModelStatus] = useState<CustomModelStatus>("idle");
   const [customModelMessage, setCustomModelMessage] = useState(CUSTOM_MODELS_HINT);
@@ -191,6 +279,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
 
     const result = await fetchCustomModels({
       provider: "custom",
+      protocol,
       apiKey: normalizedApiKey,
       baseUrl: normalizedBaseUrl,
     });
@@ -226,6 +315,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     const models = isCustom && customModelStatus === "fallback"
       ? normalizedManualModels
       : selectedModels;
+    const modelMap = parseModelMapInput(modelMapInput);
 
     if (models.length === 0 || !normalizedApiKey) {
       setError(isCustom && customModelStatus === "fallback"
@@ -241,7 +331,9 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
     setAdding(true);
     const result = await onAdd({
       provider,
+      ...(isCustom ? { protocol } : {}),
       models,
+      ...(Object.keys(modelMap).length > 0 ? { modelMap } : {}),
       apiKey: normalizedApiKey,
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
@@ -257,6 +349,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
       setPriority("0");
       setMaxRetries("2");
       setManualModelsInput("");
+      setModelMapInput("");
       resetCustomModels();
     } else {
       setError(result.error || "Failed to add key");
@@ -278,6 +371,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
               setApiKey("");
               setLabel("");
               setManualModelsInput("");
+              setProtocol("openai");
               latestResolvedSignatureRef.current = "";
               resetCustomModels();
             }}
@@ -292,7 +386,7 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
         <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
           <input
-            type="password"
+            type="text"
             value={apiKey}
             onInput={(e) => {
               setApiKey((e.target as HTMLInputElement).value);
@@ -328,6 +422,25 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
           </div>
         )}
       </div>
+
+      {isCustom && (
+        <div class="flex flex-col gap-1">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">协议类型</label>
+          <select
+            value={protocol}
+            onChange={(e) => {
+              setProtocol((e.target as HTMLSelectElement).value as UpstreamProtocol);
+              latestResolvedSignatureRef.current = "";
+              resetCustomModels();
+            }}
+            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          >
+            {PROTOCOL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {isCustom && (
         <div class="flex flex-col gap-1">
@@ -387,6 +500,17 @@ function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
         </button>
       </div>
 
+      <div class="flex flex-col gap-1">
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">兼容模型映射</label>
+        <textarea
+          value={modelMapInput}
+          onInput={(e) => setModelMapInput((e.target as HTMLTextAreaElement).value)}
+          placeholder="每行一个：gpt-5.5=claude-sonnet-4-xxx"
+          class="w-full min-h-[72px] px-2.5 py-2 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main font-mono"
+        />
+        <div class="text-xs text-slate-500 dark:text-text-dim">左边是客户端请求模型，右边是这个上游实际支持的模型。</div>
+      </div>
+
       {error && <p class="text-xs text-red-500">{error}</p>}
     </form>
   );
@@ -404,20 +528,38 @@ function providerBadgeColor(provider: ApiKeyProvider): string {
   }
 }
 
-function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart, onDragOver, onDrop, onDragEnd, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
+function protocolBadgeColor(protocol: UpstreamProtocol | undefined): string {
+  switch (protocol) {
+    case "anthropic": return "bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-300";
+    case "gemini": return "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300";
+    case "openai":
+    default:
+      return "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300";
+  }
+}
+
+function protocolLabel(protocol: UpstreamProtocol | undefined): string {
+  switch (protocol) {
+    case "anthropic":
+      return "Anthropic";
+    case "gemini":
+      return "Gemini";
+    case "openai":
+    default:
+      return "OpenAI";
+  }
+}
+
+function KeyRow({ entry, usage, usageLoading, onDelete, onToggle, onUpdateRouting, onUpdateBaseUrl, onUpdateModelMap, onUpdateProtocol, onRevealApiKey, onRefreshModels, onAddModels, onRemoveModels }: {
   entry: GroupedApiKeyEntry;
   usage: AggregatedUpstreamUsage | null;
   usageLoading: boolean;
-  draggable?: boolean;
-  isDragging?: boolean;
-  onDragStart?: (id: string) => void;
-  onDragOver?: (id: string, event: DragEvent) => void;
-  onDrop?: (id: string, event: DragEvent) => void;
-  onDragEnd?: () => void;
   onDelete: (id: string) => void;
   onToggle: (id: string, status: "active" | "disabled") => void;
   onUpdateRouting: (id: string, routing: { priority?: number; maxRetries?: number }) => Promise<void>;
   onUpdateBaseUrl: (id: string, baseUrl: string) => Promise<void>;
+  onUpdateModelMap: (id: string, modelMap: Record<string, string>) => Promise<{ ok: boolean; error?: string }>;
+  onUpdateProtocol: (id: string, protocol: UpstreamProtocol) => Promise<{ ok: boolean; error?: string }>;
   onRevealApiKey: (id: string) => Promise<{ ok: true; apiKey: string } | { ok: false; error: string }>;
   onRefreshModels: (id: string) => Promise<{ ok: true; models: string[] } | { ok: false; error: string }>;
   onAddModels: (id: string, models: string[]) => Promise<{ ok: boolean; error?: string }>;
@@ -425,6 +567,7 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
 }) {
   const isActive = entry.status === "active";
   const [expanded, setExpanded] = useState(false);
+  const [protocol, setProtocol] = useState<UpstreamProtocol>(entry.protocol ?? "openai");
   const [priority, setPriority] = useState(String(entry.priority));
   const [maxRetries, setMaxRetries] = useState(String(entry.maxRetries));
   const [baseUrl, setBaseUrl] = useState(entry.baseUrl);
@@ -432,14 +575,17 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
   const [showApiKey, setShowApiKey] = useState(false);
   const [revealingApiKey, setRevealingApiKey] = useState(false);
   const [modelInput, setModelInput] = useState("");
+  const [modelMapInput, setModelMapInput] = useState(formatModelMapInput(entry.modelMap));
   const [modelsBusy, setModelsBusy] = useState(false);
   const [modelMessage, setModelMessage] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedAvailableModels, setSelectedAvailableModels] = useState<string[]>([]);
   const [usageExpanded, setUsageExpanded] = useState(false);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const baseUrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const priorityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxRetriesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modelMapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayName = entry.label?.trim() || entry.provider;
   const mainModels = entry.models.length > 0 ? entry.models : entry.model ? [entry.model] : [];
   const apiKeyValue = showApiKey ? apiKey : (entry.apiKeyMasked || "******");
@@ -451,6 +597,10 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
   }, [entry.baseUrl]);
 
   useEffect(() => {
+    setProtocol(entry.protocol ?? "openai");
+  }, [entry.protocol]);
+
+  useEffect(() => {
     setPriority(String(entry.priority));
   }, [entry.priority]);
 
@@ -458,10 +608,15 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
     setMaxRetries(String(entry.maxRetries));
   }, [entry.maxRetries]);
 
+  useEffect(() => {
+    setModelMapInput(formatModelMapInput(entry.modelMap));
+  }, [entry.modelMap]);
+
   useEffect(() => () => {
     if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
     if (priorityTimerRef.current) clearTimeout(priorityTimerRef.current);
     if (maxRetriesTimerRef.current) clearTimeout(maxRetriesTimerRef.current);
+    if (modelMapTimerRef.current) clearTimeout(modelMapTimerRef.current);
   }, []);
 
   const persistBaseUrl = useCallback(() => {
@@ -514,6 +669,36 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
       void onUpdateRouting(entry.id, { maxRetries: next });
     }, 350);
   }, [entry.id, entry.maxRetries, onUpdateRouting]);
+
+  const handleProtocolChange = useCallback(async (value: UpstreamProtocol) => {
+    setProtocol(value);
+    const current = entry.protocol ?? "openai";
+    if (value === current) return;
+    const result = await onUpdateProtocol(entry.id, value);
+    if (!result.ok) {
+      setModelMessage(result.error || "保存协议失败");
+      setProtocol(current);
+      return;
+    }
+    setModelMessage("协议已保存");
+  }, [entry.id, entry.protocol, onUpdateProtocol]);
+
+  const persistModelMap = useCallback(async () => {
+    const next = parseModelMapInput(modelMapInput);
+    const current = entry.modelMap ?? {};
+    if (JSON.stringify(next) === JSON.stringify(current)) return;
+    const result = await onUpdateModelMap(entry.id, next);
+    setModelMessage(result.ok ? "兼容映射已保存" : (result.error || "保存兼容映射失败"));
+  }, [entry.id, entry.modelMap, modelMapInput, onUpdateModelMap]);
+
+  const scheduleModelMapPersist = useCallback((value: string) => {
+    setModelMapInput(value);
+    if (modelMapTimerRef.current) clearTimeout(modelMapTimerRef.current);
+    modelMapTimerRef.current = setTimeout(() => {
+      modelMapTimerRef.current = null;
+      void persistModelMap();
+    }, 500);
+  }, [persistModelMap]);
 
   const handleToggleApiKeyVisibility = async () => {
     if (showApiKey) {
@@ -587,27 +772,21 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
       : [...prev, model]);
   };
 
+  const handleCopyModel = useCallback(async (model: string) => {
+    const copied = await copyModelName(model);
+    setCopyMessage(copied ? `已复制模型名：${model}` : "复制模型名失败");
+  }, []);
+
   return (
     <div
-      class={`flex flex-col gap-3 px-4 py-3 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""} ${isDragging ? "opacity-60 ring-2 ring-primary/30" : ""}`}
-      draggable={draggable}
-      onDragStart={() => onDragStart?.(entry.id)}
-      onDragOver={(event) => onDragOver?.(entry.id, event)}
-      onDrop={(event) => onDrop?.(entry.id, event)}
-      onDragEnd={() => onDragEnd?.()}
+      class={`flex flex-col gap-3 px-4 py-3 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""}`}
     >
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          title="拖动排序"
-          class="cursor-grab active:cursor-grabbing p-1 text-slate-400 dark:text-text-dim hover:text-primary transition-colors"
-        >
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01" />
-          </svg>
-        </button>
         <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${providerBadgeColor(entry.provider)}`}>
           {entry.provider}
+        </span>
+        <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${protocolBadgeColor(entry.protocol)}`}>
+          {protocolLabel(entry.protocol)}
         </span>
         <span class="text-sm font-medium text-slate-700 dark:text-text-main">
           {displayName}
@@ -653,17 +832,7 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
         </div>
       </div>
 
-      <div class="grid gap-3 md:grid-cols-[11rem_minmax(0,1.6fr)_minmax(0,1fr)_96px_96px]">
-        <div class="flex flex-col gap-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游名称</label>
-          <input
-            type="text"
-            value={displayName}
-            readOnly
-            class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-100 dark:bg-bg-dark text-slate-700 dark:text-text-main cursor-default"
-          />
-        </div>
-
+      <div class="grid gap-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,1fr)_84px_76px]">
         <div class="flex flex-col gap-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游地址</label>
           <input
@@ -675,21 +844,36 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
           />
         </div>
 
+        {entry.provider === "custom" ? (
+          <div class="flex flex-col gap-1">
+            <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">协议类型</label>
+            <select
+              value={protocol}
+              onChange={(e) => { void handleProtocolChange((e.target as HTMLSelectElement).value as UpstreamProtocol); }}
+              class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+            >
+              {PROTOCOL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
         <div class="flex flex-col gap-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">上游密钥</label>
-          <div class="flex items-center gap-2">
+          <div class="relative">
             <input
               type="text"
               value={apiKeyValue}
               readOnly
-              class="w-full px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-100 dark:bg-bg-dark text-slate-700 dark:text-text-main font-mono cursor-default"
+              class="w-full px-2.5 pr-10 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-100 dark:bg-bg-dark text-slate-700 dark:text-text-main font-mono cursor-default"
             />
             <button
               type="button"
               onClick={() => void handleToggleApiKeyVisibility()}
               disabled={revealingApiKey}
               title={showApiKey ? "隐藏密钥" : "显示密钥"}
-              class="inline-flex items-center justify-center p-2 rounded-lg border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:text-primary hover:border-primary/30 transition-colors disabled:opacity-40"
+              class="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center p-1.5 rounded-md text-slate-500 dark:text-text-dim hover:text-primary transition-colors disabled:opacity-40"
             >
               {showApiKey ? (
                 <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -783,7 +967,14 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
                 key={model}
                 class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark text-slate-700 dark:text-text-main font-mono"
               >
-                <span>{model}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyModel(model)}
+                  title="复制模型名"
+                  class="hover:text-primary"
+                >
+                  {model}
+                </button>
                 <button
                   type="button"
                   onClick={() => void handleRemoveModel(model)}
@@ -812,7 +1003,18 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
                         disabled={alreadyAdded}
                         onChange={() => toggleAvailableModel(model)}
                       />
-                      <span class="font-mono">{model}</span>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void handleCopyModel(model);
+                        }}
+                        class="font-mono hover:text-primary"
+                        title="复制模型名"
+                      >
+                        {model}
+                      </button>
                       {alreadyAdded && <span class="ml-auto text-[10px]">已添加</span>}
                     </label>
                   );
@@ -837,8 +1039,22 @@ function KeyRow({ entry, usage, usageLoading, draggable, isDragging, onDragStart
               新增模型
             </button>
           </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">兼容模型映射</label>
+            <textarea
+              value={modelMapInput}
+              onInput={(e) => scheduleModelMapPersist((e.target as HTMLTextAreaElement).value)}
+              onBlur={() => { void persistModelMap(); }}
+              placeholder="每行一个：gpt-5.5=claude-sonnet-4-xxx"
+              class="w-full min-h-[88px] px-2.5 py-2 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main font-mono"
+            />
+            <div class="text-xs text-slate-500 dark:text-text-dim">左边是客户端请求模型，右边是这个上游实际接收的模型。</div>
+          </div>
           {modelMessage && (
             <div class="text-xs text-slate-500 dark:text-text-dim">{modelMessage}</div>
+          )}
+          {copyMessage && (
+            <div class="text-xs text-slate-500 dark:text-text-dim">{copyMessage}</div>
           )}
         </div>
       )}
@@ -856,12 +1072,11 @@ function UsageMetricCard({ label, value }: { label: string; value: string }) {
 }
 
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, reorderKeys, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, updateBaseUrl, updateProtocol, updateModelMap, revealApiKey, refreshEntryModels, addEntryModels, removeEntryModels, updateRouting, importKeys, exportKeys, fetchCustomModels } = useApiKeys();
   const { summary, loading: usageLoading } = useUsageSummary();
   const groupedKeys = useMemo(() => groupEntries(keys), [keys]);
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingPersistRef = useRef(new Set<Promise<void>>());
 
@@ -881,28 +1096,13 @@ export function ApiKeyManager() {
     return trackPersist(updateRouting(id, routing));
   }, [trackPersist, updateRouting]);
 
-  const moveGroupedKey = useCallback((sourceId: string, targetId: string) => {
-    if (sourceId === targetId) return;
-    const sourceIndex = groupedKeys.findIndex((entry) => entry.id === sourceId);
-    const targetIndex = groupedKeys.findIndex((entry) => entry.id === targetId);
-    if (sourceIndex < 0 || targetIndex < 0) return;
-    const next = [...groupedKeys];
-    const [moved] = next.splice(sourceIndex, 1);
-    next.splice(targetIndex, 0, moved);
-    void trackPersist(reorderKeys(next.flatMap((entry) => entry.sourceIds)));
-  }, [groupedKeys, reorderKeys, trackPersist]);
+  const handleUpdateModelMap = useCallback((id: string, modelMap: Record<string, string>) => {
+    return updateModelMap(id, modelMap);
+  }, [updateModelMap]);
 
-  const handleDragOver = useCallback((targetId: string, event: DragEvent) => {
-    event.preventDefault();
-    if (!draggingId || draggingId === targetId) return;
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  }, [draggingId]);
-
-  const handleDrop = useCallback((targetId: string, event: DragEvent) => {
-    event.preventDefault();
-    if (draggingId) moveGroupedKey(draggingId, targetId);
-    setDraggingId(null);
-  }, [draggingId, moveGroupedKey]);
+  const handleUpdateProtocol = useCallback((id: string, protocol: UpstreamProtocol) => {
+    return updateProtocol(id, protocol);
+  }, [updateProtocol]);
 
   const handleImport = useCallback(async () => {
     const files = fileRef.current?.files;
@@ -1013,15 +1213,11 @@ export function ApiKeyManager() {
               entry={entry}
               usage={aggregateUsageForEntry(entry, summary?.upstream_breakdown)}
               usageLoading={usageLoading}
-              draggable
-              isDragging={draggingId === entry.id}
-              onDragStart={setDraggingId}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onDragEnd={() => setDraggingId(null)}
               onDelete={deleteKey}
               onToggle={toggleStatus}
               onUpdateBaseUrl={handleUpdateBaseUrl}
+              onUpdateModelMap={handleUpdateModelMap}
+              onUpdateProtocol={handleUpdateProtocol}
               onRevealApiKey={revealApiKey}
               onRefreshModels={refreshEntryModels}
               onAddModels={addEntryModels}

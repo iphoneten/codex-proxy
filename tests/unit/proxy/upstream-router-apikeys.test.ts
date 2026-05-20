@@ -91,7 +91,7 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     }
   });
 
-  it("keeps only the highest priority api-key candidates", () => {
+  it("orders api-key candidates by priority so lower priorities can fail over", () => {
     pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1", priority: 1 });
     pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k2", priority: 20 });
 
@@ -102,8 +102,8 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     router.setApiKeyPool(pool, mockFactory);
 
     const candidates = router.resolveDirectCandidates("gpt-5.4");
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0].entry?.apiKey).toBe("k2");
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.entry?.apiKey)).toEqual(["k2", "k1"]);
   });
 
   it("keeps equal-priority api-key candidates as failover peers", () => {
@@ -229,5 +229,37 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     const adapter = router.resolve("google/gemma-4-26b-a4b-it:free");
     expect(adapter.tag).toBe("dynamic-openai-google/gemma-4-26b-a4b-it:free");
     expect(router.isCodexModel("google/gemma-4-26b-a4b-it:free")).toBe(false);
+  });
+
+  it("keeps mapped candidates alongside exact matches so lower-priority fallbacks remain available", () => {
+    pool.add({
+      provider: "custom",
+      models: ["gpt-5.4"],
+      apiKey: "k1",
+      baseUrl: "https://codex1.example.com/v1",
+      label: "codex",
+      priority: 1,
+    });
+    pool.add({
+      provider: "custom",
+      protocol: "anthropic",
+      models: ["claude-haiku-4-5"],
+      modelMap: { "gpt-5.4": "claude-haiku-4-5" },
+      apiKey: "k2",
+      baseUrl: "https://api.pioneer.ai/v1",
+      label: "pioneer",
+      priority: 0,
+    });
+
+    const adapters = new Map<string, UpstreamAdapter>();
+    adapters.set("codex", mockAdapter("codex"));
+
+    const router = new UpstreamRouter(adapters, {}, "codex");
+    router.setApiKeyPool(pool, mockFactory);
+
+    const candidates = router.resolveDirectCandidates("gpt-5.4");
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.entry?.label)).toEqual(["codex", "pioneer"]);
+    expect(candidates.map((candidate) => candidate.resolvedModel)).toEqual(["gpt-5.4", "claude-haiku-4-5"]);
   });
 });

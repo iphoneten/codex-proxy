@@ -88,6 +88,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
   let rawResponse: Response;
   let activeUpstream = upstream;
   let activeEntry: ApiKeyEntry | undefined = options.upstreamEntry ?? upstreamCandidates[0]?.entry;
+  let activeCandidateIndex = 0;
   try {
     const directResult = await createDirectUpstreamResponse({
       candidates: upstreamCandidates,
@@ -98,6 +99,7 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
     rawResponse = directResult.response;
     activeUpstream = directResult.upstream;
     activeEntry = directResult.entry;
+    activeCandidateIndex = directResult.candidateIndex;
   } catch (err) {
     if (options.fallbackToAccountPool) {
       return options.fallbackToAccountPool(err);
@@ -156,46 +158,84 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
 
     return stream(c, async (s) => {
       let usageInfo: UsageInfo | undefined;
+      let currentUpstream = activeUpstream;
+      let currentEntry = activeEntry;
+      let currentResponse = rawResponse;
+      let currentCandidateIndex = activeCandidateIndex;
       s.onAbort(() => {
         console.warn(`[stream-client-abort] rid=${requestId.slice(0, 8)} tag=${fmt.tag} model=${req.model}`);
         recordStreamCloseEvent({
           kind: "client-abort",
           requestId,
           tag: fmt.tag,
-          provider: activeUpstream.tag,
+          provider: currentUpstream.tag,
           path: "/v1/responses",
           model: req.model,
         });
         abortController.abort();
       });
-      await streamResponse({
-        writer: s,
-        api: activeUpstream,
-        response: rawResponse,
-        model: req.model,
-        adapter: fmt,
-        onUsage: (u) => {
-          usageInfo = u;
-        },
-        tupleSchema: req.tupleSchema,
-        onResponseId: () => {},
-        diagnostics: {
-          requestId: requestId.slice(0, 8),
-          tag: fmt.tag,
-          provider: activeUpstream.tag,
-          path: "/v1/responses",
-          abortSignal: abortController.signal,
-        },
-      });
-      if (usageInfo) {
-        enrichEgressLogUsage({
-          requestId,
-          model: req.model,
-          provider: activeUpstream.tag,
-          upstreamName,
-          usage: usageInfo,
-        });
-        recordDirectUpstreamUsage(statsTarget, usageInfo);
+      for (;;) {
+        usageInfo = undefined;
+        try {
+          await streamResponse({
+            writer: s,
+            api: currentUpstream,
+            response: currentResponse,
+            model: req.model,
+            adapter: fmt,
+            onUsage: (u) => {
+              usageInfo = u;
+            },
+            tupleSchema: req.tupleSchema,
+            onResponseId: () => {},
+            diagnostics: {
+              requestId: requestId.slice(0, 8),
+              tag: fmt.tag,
+              provider: currentUpstream.tag,
+              path: "/v1/responses",
+              abortSignal: abortController.signal,
+            },
+            rethrowUpstreamErrorBeforeFirstWrite: true,
+          });
+          if (usageInfo) {
+            enrichEgressLogUsage({
+              requestId,
+              model: req.model,
+              provider: currentUpstream.tag,
+              upstreamName: resolveUpstreamName(currentEntry, currentUpstream.tag),
+              usage: usageInfo,
+            });
+            recordDirectUpstreamUsage(
+              buildDirectUpstreamStatsTarget(currentUpstream.tag, currentEntry),
+              usageInfo,
+            );
+          }
+          return;
+        } catch (err) {
+          const nextIndex = currentCandidateIndex + 1;
+          if (nextIndex < upstreamCandidates.length) {
+            const nextResult = await createDirectUpstreamResponse({
+              candidates: upstreamCandidates.slice(nextIndex),
+              request: req,
+              signal: abortController.signal,
+              requestId,
+              startIndex: nextIndex,
+            });
+            currentUpstream = nextResult.upstream;
+            currentEntry = nextResult.entry;
+            currentResponse = nextResult.response;
+            currentCandidateIndex = nextResult.candidateIndex;
+            continue;
+          }
+
+          const msg = err instanceof Error ? err.message : "Stream interrupted";
+          const status = err instanceof CodexApiError ? toErrorStatus(err.status) : 502;
+          await s.write(
+            fmt.formatStreamError?.(status as StatusCode, msg) ??
+              `data: ${JSON.stringify({ error: { message: msg, type: "stream_error" } })}\n\n`,
+          );
+          return;
+        }
       }
     });
   }
@@ -245,13 +285,15 @@ async function createDirectUpstreamResponse(options: {
   request: HandleDirectRequestOptions["req"];
   signal: AbortSignal;
   requestId: string;
-}): Promise<{ response: Response; upstream: UpstreamAdapter; entry?: ApiKeyEntry }> {
+  startIndex?: number;
+}): Promise<{ response: Response; upstream: UpstreamAdapter; entry?: ApiKeyEntry; candidateIndex: number }> {
   const { candidates, request, signal, requestId } = options;
+  const startIndex = options.startIndex ?? 0;
   let lastError: unknown;
   const timeoutSeconds = getConfig().api?.timeout_seconds ?? 60;
   const timeoutMs = Math.max(1_000, timeoutSeconds * 1000);
 
-  for (const candidate of candidates) {
+  for (const [localIndex, candidate] of candidates.entries()) {
     const resolvedModel = candidate.resolvedModel?.trim() || request.codexRequest.model;
     const candidateRequest = resolvedModel === request.codexRequest.model
       ? request.codexRequest
@@ -293,7 +335,12 @@ async function createDirectUpstreamResponse(options: {
               stream: request.codexRequest.stream,
             },
           });
-          return { response, upstream: candidate.adapter, entry: candidate.entry };
+          return {
+            response,
+            upstream: candidate.adapter,
+            entry: candidate.entry,
+            candidateIndex: startIndex + localIndex,
+          };
         } catch (error) {
           lastError = error;
           const retryable = isRetryableDirectUpstreamError(error);
@@ -325,7 +372,7 @@ async function createDirectUpstreamResponse(options: {
             break;
           }
 
-          if (!retryable) throw error;
+          if (!retryable) break candidateAttempt;
           if (remainingRetries <= 0) break candidateAttempt;
           remainingRetries -= 1;
           attempt += 1;

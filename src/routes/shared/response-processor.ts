@@ -47,6 +47,10 @@ export interface StreamResponseOptions {
   usageHint?: UsageHint;
   onResponseMetadata?: (metadata: ResponseMetadata) => void;
   diagnostics?: StreamDiagnostics;
+  /** For direct-upstream failover: if upstream fails before any bytes are
+   *  written to the client, rethrow instead of formatting a terminal SSE
+   *  error so the caller can try the next candidate safely. */
+  rethrowUpstreamErrorBeforeFirstWrite?: boolean;
 }
 
 /**
@@ -198,6 +202,9 @@ export async function streamResponse(options: StreamResponseOptions): Promise<vo
       upstreamStatus: typeof errStatus === "number" ? errStatus : null,
       detail: errMsg,
     });
+    if (options.rethrowUpstreamErrorBeforeFirstWrite && written.chunks === 0) {
+      throw err;
+    }
     // Send error SSE event to client before closing
     try {
       await writer.write(

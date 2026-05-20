@@ -62,6 +62,32 @@ describe("handleDirectRequest fallback", () => {
     expect(second.createResponse).toHaveBeenCalledTimes(1);
   });
 
+  it("falls through to the next candidate on non-retryable direct upstream errors", async () => {
+    const first = makeUpstream("first", async () => {
+      throw new CodexApiError(400, "bad request");
+    });
+    const second = makeUpstream("second", async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const fmt = createMockFormatAdapter();
+    const req = createDefaultRequest();
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: first as never,
+      upstreamCandidates: [
+        { adapter: first as never, entry: { id: "1", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+        { adapter: second as never, entry: { id: "2", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "b", baseUrl: "", label: null, priority: 1, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(first.createResponse).toHaveBeenCalledTimes(1);
+    expect(second.createResponse).toHaveBeenCalledTimes(1);
+  });
+
   it("honors the direct upstream retry count configured by the user", async () => {
     const first = makeUpstream("first", async () => {
       throw new CodexApiError(503, "temporarily unavailable");
@@ -266,6 +292,45 @@ describe("handleDirectRequest fallback", () => {
 
     const call = fmt.streamTranslator.mock.calls[0] ?? [];
     expect(call[0]).toMatchObject({ api: second });
+    expect(first.createResponse).toHaveBeenCalledTimes(1);
+    expect(second.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails over to the next direct upstream when the first stream fails before any chunks are written", async () => {
+    const first = {
+      tag: "first",
+      createResponse: vi.fn(async () => new Response("data: {}\n\n", { status: 200 })),
+      parseStream: vi.fn(async function* () {
+        throw new Error("stream bootstrap failed");
+      }),
+    };
+    const second = makeUpstream("second", async () => new Response("data: {}\n\n", { status: 200 }));
+    const fmt = createMockFormatAdapter({
+      streamTranslator: vi.fn(async function* (options) {
+        if ((options.api as { tag: string }).tag === "first") {
+          throw new Error("stream bootstrap failed");
+        }
+        options.onUsage({ input_tokens: 10, output_tokens: 20 });
+        yield "data: {}\n\n";
+      }),
+    });
+    const req = { ...createDefaultRequest(), isStreaming: true };
+    const app = new Hono();
+
+    app.post("/test", (c) => handleDirectRequest({
+      c,
+      upstream: first as never,
+      upstreamCandidates: [
+        { adapter: first as never, entry: { id: "1", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "a", baseUrl: "", label: null, priority: 10, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+        { adapter: second as never, entry: { id: "2", provider: "openai", model: "gpt-4o", models: ["gpt-4o"], apiKey: "b", baseUrl: "", label: null, priority: 1, maxRetries: 0, status: "active", addedAt: "", lastUsedAt: null } },
+      ],
+      req,
+      fmt,
+    } satisfies HandleDirectRequestOptions));
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("data: {}");
     expect(first.createResponse).toHaveBeenCalledTimes(1);
     expect(second.createResponse).toHaveBeenCalledTimes(1);
   });

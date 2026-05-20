@@ -91,6 +91,25 @@ export class UpstreamRouter {
     return [];
   }
 
+  private resolveMappedApiKeyCandidates(model: string): DirectUpstreamCandidate[] {
+    if (!this.apiKeyPool || !this.adapterFactory) return [];
+
+    const entries = this.sortEntries(
+      this.apiKeyPool.getAll().filter((entry) => {
+        if (entry.status !== "active") return false;
+        const mappedModel = entry.modelMap?.[model]?.trim();
+        return Boolean(mappedModel);
+      }),
+    );
+
+    return entries.map((entry) => ({
+      entry,
+      adapter: this.getOrCreateDynamicAdapter(entry),
+      matchedModel: model,
+      resolvedModel: entry.modelMap?.[model]?.trim() ?? this.getEntryResolvedModel(entry),
+    }));
+  }
+
   private resolveFallbackApiKeyCandidates(model: string): DirectUpstreamCandidate[] {
     if (!this.apiKeyPool || !this.adapterFactory) return [];
     const fallbackProviders = new Set(this.getFallbackProviders(model));
@@ -212,14 +231,18 @@ export class UpstreamRouter {
 
   resolveDirectCandidates(model: string): DirectUpstreamCandidate[] {
     const apiKeyCandidates = this.resolveExactApiKeyCandidates(model);
-    const fallbackCandidates = apiKeyCandidates.length > 0 ? [] : this.resolveFallbackApiKeyCandidates(model);
-    const candidatePool = apiKeyCandidates.length > 0 ? apiKeyCandidates : fallbackCandidates;
+    const mappedCandidates = this.resolveMappedApiKeyCandidates(model)
+      .filter((candidate) => !candidate.entry || !apiKeyCandidates.some((exact) => exact.entry?.id === candidate.entry?.id));
+    const fallbackCandidates = apiKeyCandidates.length > 0 || mappedCandidates.length > 0
+      ? []
+      : this.resolveFallbackApiKeyCandidates(model);
+    const candidatePool = apiKeyCandidates.length > 0 || mappedCandidates.length > 0
+      ? [...apiKeyCandidates, ...mappedCandidates]
+      : fallbackCandidates;
     if (candidatePool.length > 0) {
-      const maxPriority = Math.max(...candidatePool.map((candidate) => candidate.entry?.priority ?? 0));
       const seen = new Set<string>();
       const out: DirectUpstreamCandidate[] = [];
       for (const candidate of candidatePool) {
-        if ((candidate.entry?.priority ?? 0) < maxPriority) continue;
         const key = candidate.entry
           ? `${candidate.entry.id}:${candidate.resolvedModel ?? ""}`
           : `${candidate.adapter.tag}:${candidate.resolvedModel ?? ""}`;
