@@ -1257,8 +1257,10 @@ export function createResponsesRoutes(
       expectsImageGen,
     };
     const canFallbackToAccountPool = accountPool.isAuthenticated();
-    const fallbackToAccountPool = () =>
-      handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
+    const fallbackToAccountPool = (_error?: unknown) => {
+      // When all direct upstreams fail, fall back to local account pool
+      return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
+    };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
@@ -1289,7 +1291,7 @@ export function createResponsesRoutes(
         upstreamEntry: routeMatch?.kind === "api-key" ? routeMatch.entry : undefined,
         req: directReq,
         fmt: PASSTHROUGH_FORMAT,
-        fallbackToAccountPool: canFallbackToAccountPool ? fallbackToAccountPool : undefined,
+        fallbackToAccountPool: fallbackToAccountPool,
       });
     }
 

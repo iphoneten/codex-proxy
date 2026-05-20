@@ -102,6 +102,11 @@ export async function streamResponse(options: StreamResponseOptions): Promise<vo
       onResponseMetadata,
       streamContext,
     })) {
+      // 如果客户端已中止，立即停止流处理
+      if (diagnostics?.abortSignal?.aborted) {
+        return;
+      }
+
       const chunkTrace = inspectStreamChunk(chunk);
       if (debugDumpEnabled()) {
         debugDump("upstream-chunk", {

@@ -175,6 +175,11 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
         abortController.abort();
       });
       for (;;) {
+        // 客户端已中止，停止重试
+        if (abortController.signal.aborted) {
+          return;
+        }
+
         usageInfo = undefined;
         try {
           await streamResponse({
@@ -392,7 +397,8 @@ function isRetryableDirectUpstreamError(error: unknown): boolean {
   if (error.name === "DirectUpstreamTimeoutError") return true;
   if (!(error instanceof CodexApiError)) return true;
   if (isCloudflareChallengeResponse(error.status, error.body)) return true;
-  return error.status === 408 || error.status === 409 || error.status === 429 || error.status >= 500;
+  // 401/403 应该尝试下一个候选而不是立即放弃
+  return error.status === 401 || error.status === 403 || error.status === 408 || error.status === 409 || error.status === 429 || error.status >= 500;
 }
 
 function buildModelFallbacks(entry: { model?: string; models?: string[] } | undefined, resolvedModel: string): string[] {

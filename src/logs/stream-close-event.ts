@@ -81,6 +81,11 @@ function prune<T extends object>(obj: T): Partial<T> {
  *  and the in-memory audit log. Never throws — logging failures inside the
  *  helpers swallow themselves. */
 export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
+  // 客户端中止是正常的，不需要记录为错误
+  if (evt.kind === "client-abort") {
+    return;
+  }
+
   const name = ERROR_NAMES[evt.kind];
   const base = BASE_MESSAGES[evt.kind];
   const message = evt.detail ? `${base}: ${evt.detail}` : base;
